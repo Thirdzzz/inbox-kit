@@ -4,12 +4,14 @@
 // 负责人的其他未提交文件一律不碰：远端改了他正在编辑的文件时宁可不推送。
 // 用法：
 //   node .inbox/scripts/state-sync.mjs                   发现需求用：只同步 IDEAS.md 与发现账本
-//   node .inbox/scripts/state-sync.mjs --all -m "<信息>"  调度者用：同步 INBOX.md、IDEAS.md、inbox/ 的全部改动
+//   node .inbox/scripts/state-sync.mjs --all -m "<信息>"  调度者用：同步 INBOX.md、IDEAS.md、inbox/ 的全部改动，
+//       同步成功后按最新记录运行 gc.mjs 回收没用的工作树和分支（状态推上去之后才删，删除依据和远端一致）
 // 退出码：0 已同步（或无事可做）；1 没能同步（原因见输出，提交留在本地，下次再试）。
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { argValue, isMain, normalize, paths, statePatterns } from './config.mjs'
+import { collectGarbage } from './gc.mjs'
 
 export const ideaFiles = [paths.ideas, paths.ledger]
 export const allStateFiles = [paths.inbox, paths.ideas, `${paths.records}/`]
@@ -102,7 +104,13 @@ if (isMain(import.meta.url)) {
   const root = argValue(args, '--root') ?? mainCheckout(process.cwd())
   const file = path.join(root, 'inbox.config.json')
   const { config } = normalize(existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {})
-  const result = stateSync({ root, remote: config.remote, mainBranch: config.mainBranch, files: args.includes('--all') ? allStateFiles : ideaFiles, message: argValue(args, '-m') })
+  const all = args.includes('--all')
+  const result = stateSync({ root, remote: config.remote, mainBranch: config.mainBranch, files: all ? allStateFiles : ideaFiles, message: argValue(args, '-m') })
+  if (all && result.ok) {
+    const { removed, kept } = collectGarbage(root, config)
+    for (const r of removed) result.report.push(`回收：${r.id}（${r.status ?? ''}）删除了${r.removed.join('、')}。`)
+    for (const k of kept) result.report.push(`回收：保留 ${k.id}：${k.reason}。`)
+  }
   console.log(result.report.join('\n'))
   process.exitCode = result.ok ? 0 : 1
 }

@@ -94,7 +94,7 @@ Development subagents are separate processes started by `.inbox/scripts/launch.m
 | `died`, `launch-failed`, `orphan` | gone without an exit code / never started / `进行中` record without a worktree | `interrupt.mjs`, then refill |
 | `stale`, `overdue` | no activity for {{idleLimit}} min / running past {{timeLimit}} min | `launch.mjs stop NNN`, `interrupt.mjs`, refill |
 | `broken` | worktree directory is damaged | `worktree.mjs cleanup NNN --keep-branch`, `interrupt.mjs`, refill |
-| `parked` | worktree kept for a record that is not `进行中` | nothing |
+| `parked` | worktree of a record that is not `进行中` | `gc.mjs` removes it |
 
 Each non-`live` entry also carries an `advice` line with the exact commands. The process identity is checked by start time, so a reused pid is never mistaken for, or stopped as, a subagent.
 
@@ -103,7 +103,7 @@ Never trust "it is probably still working" over the watchdog, and never wait pas
 ## One run
 
 ### 0. Prepare
-`node .inbox/scripts/state-sync.mjs --all -m "docs: 同步收件箱"` (brings the main checkout up to date). Run `node .inbox/scripts/watchdog.mjs` and handle every state as in *Liveness*. Remove worktrees of records that are `已上线` or `已否决` (`node .inbox/scripts/worktree.mjs cleanup NNN`).
+`node .inbox/scripts/state-sync.mjs --all -m "docs: 同步收件箱"` (brings the main checkout up to date). Run `node .inbox/scripts/watchdog.mjs` and handle every state as in *Liveness*. Then `node .inbox/scripts/gc.mjs` (see *Cleanup*).
 **Done when** every `进行中` record is `live` or `launching` in the watchdog output.
 
 ### 1. Read
@@ -139,10 +139,11 @@ Repeat until no subagent is live and no candidate is dispatchable:
 2. For each `exited` requirement, `launch.mjs result NNN` gives `returned` (from the first line `返回：…` of its results file), the exit code, and the last message. No `returned` value counts as `failed`.
 3. Copy the results file into the record (`## 进展记录`, `## 结果`), then:
    - **`ready` + `auto`**, and `node .inbox/scripts/needs-review.mjs NNN` says not required: run *Merge*.
-   - **`ready` + `review`**, or needs-review says required (also after a retry of an approved requirement): do not merge; set `待检查`{{#hasPreview}}, create a preview (*Preview*){{/hasPreview}}, `worktree.mjs cleanup NNN --keep-branch`.
-   - **`needs-info`**: every question must carry a blocker tag. Untagged → `interrupt.mjs NNN "未带阻碍标签的追问"`, then `launch.mjs start NNN --retry --note "不要停下来问：选保守做法，写成「假设：…」"`. Tagged → `需要补充`, `追问摘要：` under the heading, `worktree.mjs cleanup NNN --keep-branch`.
+   - **`ready` + `review`**, or needs-review says required (also after a retry of an approved requirement): do not merge; set `待检查`{{#hasPreview}}, create a preview (*Preview*){{/hasPreview}}. `gc.mjs` removes the worktree; the pushed branch stays for review.
+   - **`needs-info`**: every question must carry a blocker tag. Untagged → `interrupt.mjs NNN "未带阻碍标签的追问"`, then `launch.mjs start NNN --retry --note "不要停下来问：选保守做法，写成「假设：…」"`. Tagged → `需要补充`, `追问摘要：` under the heading. `gc.mjs` removes the worktree; the pushed branch stays.
    - **`failed`**: `interrupt.mjs NNN "<reason from the results file>"`.
 4. Refill freed slots (*Choose the work*, *Develop*). Sync state once per round (`state-sync.mjs --all -m "docs: 更新收件箱状态"`).
+5. When the loop ends: final `state-sync.mjs --all`, then `gc.mjs` (*Cleanup*), then the report.
 
 ## Merge
 
@@ -171,7 +172,7 @@ From the main checkout:
 {{/deployNone}}
 {{/verifies}}
 6. `node .inbox/scripts/log-decision.mjs 需求NNN <决策> <原因> inbox/NNN-<title>.md <结果>`.
-7. `node .inbox/scripts/worktree.mjs cleanup NNN` (worktree, local and remote branch), then `state-sync.mjs --all -m "docs: 需求 NNN 已上线"`.
+7. `state-sync.mjs --all -m "docs: 需求 NNN 已上线"`. Its cleanup deletes the worktree, the local and the remote branch; check that its output has `回收：NNN（已上线）`.
 
 {{#verifies}}
 ### Deployment check
@@ -184,7 +185,22 @@ For a `review` requirement, run `{{previewCommand}}` in `{{worktreeDir}}/NNN` be
 {{/hasPreview}}
 
 ### Rollback
-Owner asks for rollback on an `已上线` entry, or deployment failed: create a worktree on a new branch `rollback/NNN` from the latest `{{mainRef}}` (`git worktree add -b rollback/NNN <dir> {{mainRef}}`), `git revert` only this requirement's recorded commit SHAs (newest first), and land it by running `node .inbox/scripts/integrate.mjs` inside that worktree. Never revert a `before..after` range: it can contain other requirements.
+Owner asks for rollback on an `已上线` entry, or deployment failed: create a worktree on a new branch `rollback/NNN` from the latest `{{mainRef}}` (`git worktree add -b rollback/NNN {{worktreeDir}}/rollback-NNN {{mainRef}}`), `git revert` only this requirement's recorded commit SHAs (newest first), and land it by running `node .inbox/scripts/integrate.mjs` inside that worktree. `gc.mjs` removes both once the revert is on `{{mainBranch}}`. Never revert a `before..after` range: it can contain other requirements.
+
+## Cleanup
+
+Worktrees and branches must not pile up. `node .inbox/scripts/gc.mjs` decides from each record's status, never from guesswork:
+
+| record | worktree + local branch | remote `inbox/NNN` |
+|---|---|---|
+| `进行中`, or its subagent is alive | kept | kept |
+| `已上线`, `已否决` | deleted | deleted |
+| `待办`, `待检查`, `需要补充`, `失败` | deleted when clean and fully pushed (the next claim adopts the remote branch); otherwise kept and reported | kept: retries, merge-only and the owner's review use it |
+| no record | deleted when all its commits are on `{{mainBranch}}`; otherwise kept and reported for the owner | same |
+| `rollback/NNN` | deleted once the revert is on `{{mainBranch}}` | same |
+
+`state-sync.mjs --all` runs it automatically after every successful push, so every state change (`已上线`, `待检查`, `需要补充`, …) is followed by cleanup; its output lines start with `回收：`. A freshly claimed worktree of a non-final record is left alone for 5 minutes so you can set `进行中`. Run `gc.mjs` yourself in *Prepare* and whenever a sync failed. List its `kept` entries in the report. Never delete a branch or worktree by hand, and never create branches other than `inbox/NNN` and `rollback/NNN`.
+**Done when** `node .inbox/scripts/gc.mjs --check` exits 0, or every line it prints is in the report.
 
 ## Report (Chinese)
 At the end of the run, and whenever a requirement finishes, fails, or is interrupted:
@@ -193,6 +209,7 @@ At the end of the run, and whenever a requirement finishes, fails, or is interru
 3. 我替你做的决定：every `假设：…` from results files, with the record link.
 4. 没有验证的：what results files list as unverified.
 5. Anything still `进行中`, by name. Silence is never a status.
+6. 残留：`gc.mjs` 的 `kept` 条目和原因（没有就写「无」）.
 
 ## Scope
 - Subagents change only what their requirement needs.

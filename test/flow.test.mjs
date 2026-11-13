@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { KIT, baseConfig, git, makeRepo, node, recordText, write } from './helpers.mjs'
 
@@ -30,6 +30,7 @@ function addRecord(root, id, status = '待办') {
   writeFileSync(path.join(root, 'INBOX.md'), `${inbox}\n## [${id} · ${status}] 示例\n详情：[inbox/${id}-示例.md](inbox/${id}-示例.md)\n`)
   git(root, 'add', 'INBOX.md', 'inbox')
   git(root, 'commit', '-qm', `docs: 分诊需求 ${id}`)
+  git(root, 'pull', '-q', '--rebase', 'origin', 'main')
   git(root, 'push', '-q', 'origin', 'main')
 }
 
@@ -465,6 +466,115 @@ test('部署：command 模式部署后用确认命令判定成功、失败、没
     const skill = readFileSync(path.join(repo.root, '.agents/skills/inbox/SKILL.md'), 'utf8')
     assert.match(skill, /echo deployed > deployed\.txt/)
     assert.match(skill, /deploy-status\.mjs <sha>/)
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('回收：按记录状态删掉没用的工作树和分支，未推送的工作与进行中的需求不动', () => {
+  const repo = makeRepo()
+  try {
+    const exists = (ref) => {
+      try {
+        git(repo.root, 'rev-parse', '--verify', '-q', ref)
+        return true
+      } catch {
+        return false
+      }
+    }
+    const remoteHas = (branch) => git(repo.remote, 'branch', '--list', branch) !== ''
+    const commitIn = (wt, file, push = true) => {
+      write(wt, file, `${file}\n`)
+      git(wt, 'add', file)
+      git(wt, 'commit', '-qm', `feat: ${file}`)
+      if (push) git(wt, 'push', '-q', 'origin', 'HEAD')
+    }
+    const claim = (id) => json(repo.run('worktree.mjs', 'claim', id)).path
+    // 020 已上线：集成后忘了清理。
+    addRecord(repo.root, '020', '已上线')
+    const w20 = claim('020')
+    commitIn(w20, 'a.txt')
+    assert.equal(repo.run('integrate.mjs', '020').status, 0)
+    // 021 待检查：已推送，工作树干净。
+    addRecord(repo.root, '021', '待检查')
+    commitIn(claim('021'), 'b.txt')
+    // 022 待办：有未推送的提交。
+    addRecord(repo.root, '022', '待办')
+    commitIn(claim('022'), 'c.txt', false)
+    // 023 进行中：子代理在干活。
+    addRecord(repo.root, '023', '进行中')
+    const w23 = claim('023')
+    // 024 已否决：分支上有没合入的代码。
+    addRecord(repo.root, '024', '已否决')
+    commitIn(claim('024'), 'd.txt')
+    // 025 没有记录、有没合入的提交；026 没有记录、什么都没做。
+    commitIn(claim('025'), 'e.txt')
+    claim('026')
+    // 已落地的回滚分支。
+    git(repo.root, 'fetch', '-q', 'origin')
+    const rb = path.join(repo.base, 'repo.inbox-worktrees/rollback-020')
+    git(repo.root, 'worktree', 'add', '-q', '-b', 'rollback/020', rb, 'origin/main')
+    git(repo.root, 'commit', '-qm', 'docs: 记录', '--allow-empty')
+    git(repo.root, 'push', '-q')
+
+    // 刚认领的工作树在启动窗口内不回收（调度者可能正要把它改成「进行中」）；终态的照删。
+    assert.deepEqual(JSON.parse(repo.run('gc.mjs', '--check').stdout).removed.map((r) => r.id), ['020', '024'])
+    const old = new Date(Date.now() - 10 * 60000)
+    for (const name of readdirSync(path.join(repo.base, 'repo.inbox-worktrees'))) utimesSync(path.join(repo.base, 'repo.inbox-worktrees', name, '.git'), old, old)
+    const check = repo.run('gc.mjs', '--check')
+    assert.equal(check.status, 1)
+    assert.match(check.stderr, /020（已上线）的工作树、本地分支、远端分支已经没用/)
+
+    const result = repo.run('gc.mjs')
+    assert.equal(result.status, 0, result.stderr)
+    const { kept } = JSON.parse(result.stdout)
+    for (const id of ['020', '024', '026']) {
+      assert.ok(!existsSync(path.join(repo.base, `repo.inbox-worktrees/${id}`)), `${id} 工作树应删除`)
+      assert.ok(!exists(`refs/heads/inbox/${id}`), `${id} 本地分支应删除`)
+      assert.ok(!remoteHas(`inbox/${id}`), `${id} 远端分支应删除`)
+    }
+    assert.ok(!existsSync(path.join(repo.base, 'repo.inbox-worktrees/021')))
+    assert.ok(!exists('refs/heads/inbox/021'))
+    assert.ok(remoteHas('inbox/021'), '待检查的远端分支要留给负责人审阅')
+    assert.ok(existsSync(path.join(repo.base, 'repo.inbox-worktrees/022')), '未推送的提交不能丢')
+    assert.ok(existsSync(w23), '进行中的工作树不能动')
+    assert.ok(existsSync(path.join(repo.base, 'repo.inbox-worktrees/025')), '没有记录但有未合入的提交，要留给人确认')
+    assert.ok(!existsSync(rb) && !exists('refs/heads/rollback/020'), '已落地的回滚工作树和分支应删除')
+    assert.deepEqual(kept.map((k) => k.id), ['022', '025'])
+
+    // 回收后再检查：只剩需要人看的 025。
+    const again = repo.run('gc.mjs', '--check')
+    assert.equal(again.status, 1)
+    assert.doesNotMatch(again.stderr, /已经没用/)
+    assert.match(again.stderr, /025：没有需求记录/)
+    // 待审阅需求被「通过」后仍能从远端接管合并。
+    assert.equal(json(repo.run('worktree.mjs', 'claim', '021')).adopted, true)
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('状态同步 --all 推送成功后自动回收：已上线需求的工作树和分支不残留', () => {
+  const repo = makeRepo()
+  try {
+    addRecord(repo.root, '030', '进行中')
+    const { path: wt } = json(repo.run('worktree.mjs', 'claim', '030'))
+    write(wt, 'x.txt', 'x\n')
+    git(wt, 'add', 'x.txt')
+    git(wt, 'commit', '-qm', 'feat: x')
+    git(wt, 'push', '-q', 'origin', 'HEAD:inbox/030')
+    assert.equal(repo.run('integrate.mjs', '030').status, 0)
+    const record = path.join(repo.root, 'inbox/030-示例.md')
+    writeFileSync(record, readFileSync(record, 'utf8').replace('status: 进行中', 'status: 已上线'))
+    writeFileSync(path.join(repo.root, 'INBOX.md'), readFileSync(path.join(repo.root, 'INBOX.md'), 'utf8').replace('[030 · 进行中]', '[030 · 已上线]'))
+    const synced = repo.run('state-sync.mjs', '--all', '-m', 'docs: 需求 030 已上线')
+    assert.equal(synced.status, 0, synced.stdout)
+    assert.match(synced.stdout, /回收：030（已上线）删除了工作树、本地分支、远端分支/)
+    assert.ok(!existsSync(wt))
+    assert.equal(git(repo.remote, 'branch', '--list', 'inbox/*'), '')
+    assert.equal(git(repo.root, 'branch', '--list', 'inbox/*'), '')
+    assert.ok(!existsSync(path.join(repo.base, 'repo.inbox-worktrees')), '空的工作树目录也删掉')
+    assert.equal(repo.run('gc.mjs', '--check').status, 0)
   } finally {
     repo.cleanup()
   }

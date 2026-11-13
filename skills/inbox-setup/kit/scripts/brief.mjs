@@ -39,6 +39,7 @@ export function buildBrief(config, { id, worktree, recordFile, note = '' }) {
   \`\`\`
 - 不要改 \`${paths.inbox}\`、\`${paths.ideas}\`、\`${paths.records}/NNN-*.md\`（归调度者），也不要改 \`.inbox/\`、\`inbox.config.json\`、\`.agents/skills/inbox*\`（流水线自身）。越权的分支不会被合并。
 - 不要读取或修改与本需求无关的、工作树以外的文件。
+- 只用当前分支 \`inbox/${id}\`：不要新建分支、不要推送其他分支、不要再建工作树；临时文件放在工作树里并加进 \`.gitignore\` 或在结束前删除。
 
 ## 返回值（写在结果文件第一行，也作为你最后一句话）
 - \`返回：ready\`：检查全部通过，已推送。
