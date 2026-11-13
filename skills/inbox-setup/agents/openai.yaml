@@ -1,0 +1,6 @@
+interface:
+  display_name: "inbox-setup"
+  short_description: "在本仓库安装或更新收件箱需求流水线"
+  default_prompt: "Use $inbox-setup to install the inbox pipeline in this repository."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,6 @@
+interface:
+  display_name: "inbox"
+  short_description: "调度收件箱：分诊、派发子代理开发、检查合并、汇报"
+  default_prompt: "Use $inbox."
+policy:
+  allow_implicit_invocation: false

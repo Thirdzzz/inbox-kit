@@ -1,0 +1,6 @@
+interface:
+  display_name: "inbox-idea"
+  short_description: "把毛坯想法记进想法簿"
+  default_prompt: "Use $inbox-idea."
+policy:
+  allow_implicit_invocation: false
