@@ -23,7 +23,7 @@ Reader-facing text (entries, replies) is Chinese.
 **Done when** every ask has a classification and the list of files it will change.
 
 ### 2. Ask
-Put only product choices to the owner, the ones code cannot answer. Number each question with a recommended answer so "yes" accepts it. Facts (what exists, which files) you look up yourself. Direct mode also stops here while a choice is open.
+Put only product choices to the owner, the ones code cannot answer. Number each question with a recommended answer so "yes" accepts it. Facts (what exists, which files) you look up yourself. Direct mode also stops here while a choice is open, unless the owner said to use your recommendations ("不要提问", "用推荐的"); then write the recommended answer into 设计与范围 as `假设：…` and go on.
 **Done when** every acceptance criterion is one check a test or one operation can settle.
 
 ### 3. Split
@@ -31,7 +31,7 @@ Unit = one change that merges alone and shows the owner a visible difference. Tw
 **Done when** every entry has a 依赖 line, `无` included.
 
 ### 4. Write
-Append after the last entry of the 需求区 with exact-text edits; existing entries stay byte-identical. No number or status in the heading. No commit. Format:
+Append after the last entry of the 需求区 with exact-text edits; existing entries stay byte-identical. No number or status in the heading; `[急]` and `[review]` are optional, omit the ones that do not apply. No commit. Format:
 
 ```
 ## [急][review] 一句话标题
