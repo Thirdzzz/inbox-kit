@@ -542,6 +542,15 @@ test('回收：按记录状态删掉没用的工作树和分支，未推送的�
     assert.ok(!existsSync(rb) && !exists('refs/heads/rollback/020'), '已落地的回滚工作树和分支应删除')
     assert.deepEqual(kept.map((k) => k.id), ['022', '025'])
 
+    // 子代理跑完得很快：认领不到 5 分钟，但已经启动过子代理，收尾时照样回收。
+    addRecord(repo.root, '027', '待检查')
+    const w27 = claim('027')
+    commitIn(w27, 'f.txt')
+    const gitDir = git(w27, 'rev-parse', '--path-format=absolute', '--git-dir')
+    write(gitDir, 'inbox-agent-id', 'pid:999999@Mon Jan  1 00:00:00 2001\n')
+    assert.equal(repo.run('gc.mjs').status, 0)
+    assert.ok(!existsSync(w27), '子代理结束后的待检查工作树应回收，不受启动窗口保护')
+
     // 回收后再检查：只剩需要人看的 025。
     const again = repo.run('gc.mjs', '--check')
     assert.equal(again.status, 1)

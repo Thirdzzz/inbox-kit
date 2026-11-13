@@ -1,6 +1,6 @@
 // 回收：按需求记录的状态，删掉已经没用的工作树、本地分支和远端分支，让它们不随需求增多而堆积。
 // 规则（以主检出里的 inbox/NNN-*.md 为准）：
-//   进行中、子代理还活着，或（非终态时）5 分钟内刚认领 → 不动
+//   进行中、子代理还活着，或（非终态时）5 分钟内刚认领且还没启动子代理 → 不动
 //   已上线、已否决                  → 工作树、本地分支、远端分支全删（代码已在主分支上，或已被否决）
 //   待办、待检查、需要补充、失败    → 远端分支保留（重试、合并、负责人审阅都要用它）；
 //                                     工作树和本地分支在「干净且每个提交都已在远端分支或主分支上」时删掉，下次认领会从远端接管；
@@ -47,9 +47,12 @@ function agentAlive(dir) {
   return Boolean(idFile && existsSync(idFile) && isOurProcess(readFileSync(idFile, 'utf8').trim()))
 }
 
-// 刚认领、还没把状态改成「进行中」或还没启动子代理的工作树（启动窗口内）不回收。
+// 刚认领、还没启动过子代理的工作树（启动窗口内）不回收：调度者可能正要把它改成「进行中」再启动。
+// 只看「还没启动过」：子代理跑完很快时，收尾回收不能被这个窗口挡住。
 function justClaimed(dir, now = Date.now()) {
   try {
+    const gitDir = run(dir, 'rev-parse', '--path-format=absolute', '--git-dir').stdout.trim()
+    if (!gitDir || existsSync(path.join(gitDir, 'inbox-agent-id'))) return false
     return now - statSync(path.join(dir, '.git')).mtimeMs < launchWindowMinutes * 60000
   } catch {
     return false
@@ -82,7 +85,10 @@ export function collectGarbage(root, config, { dryRun = false } = {}) {
     const local = `refs/heads/inbox/${id}`
     const pushed = `refs/remotes/${remote}/inbox/${id}`
     if (status === '进行中' || (hasWorktree && agentAlive(dir))) continue
-    if (hasWorktree && !terminal.has(status) && justClaimed(dir)) continue
+    if (hasWorktree && !terminal.has(status) && justClaimed(dir)) {
+      kept.push({ id, status, reason: '刚认领、还没启动子代理（5 分钟内），暂不回收' })
+      continue
+    }
 
     let full = terminal.has(status)
     if (!status) {
