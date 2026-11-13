@@ -2,7 +2,7 @@
 // 用法：node .inbox/scripts/dependencies.mjs [记录目录]
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { checkoutRoot, isMain, paths } from './config.mjs'
+import { checkoutRoot, isMain, paths } from "./config.mjs"
 
 export function parseDependencies(value) {
   const text = value.trim()

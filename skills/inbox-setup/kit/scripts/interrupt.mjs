@@ -1,10 +1,10 @@
 // 处理中断或失败的「进行中」需求：先在重试额度内自动改回「待办」，下一轮直接重派；额度用尽才改「失败」交给负责人。
 // 为什么：中断后静默改回「待办」，负责人看不到发生过什么；一律停在「失败」又会让整条链路等人回复。
-// 用法：node .inbox/scripts/interrupt.mjs <NNN> "<原因>" [--no-retry]
+// 用法：node .inbox/scripts/interrupt.mjs <NNN> "<原因>" [--no-retry]（改主检出里的文件，不提交；调度者按批提交）
 // --no-retry 只用于重试也无济于事的情形（如部署失败已回滚）。只改 INBOX.md 与对应的 inbox/NNN-*.md。
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { checkoutRoot, isMain, paths, readConfig } from './config.mjs'
+import { isMain, mainRoot, paths, readConfig } from './config.mjs'
 
 export function autoRetriesOf(record) {
   return Number(/^auto_retries:\s*(\d+)\s*$/m.exec(record)?.[1] ?? 0)
@@ -12,6 +12,8 @@ export function autoRetriesOf(record) {
 
 export function interruptText({ inbox, record, id, reason, date, retry = true, maxAutoRetries = 3 }) {
   if (!reason?.trim()) throw new Error('必须写明中断原因')
+  // 原因要嵌进句子里，去掉末尾标点，避免出现「。。」。
+  reason = reason.trim().replace(/[。.，,；;！!]+$/u, '')
   if (!/^\d{3}$/.test(id)) throw new Error(`编号无效：${id}`)
 
   const inboxLines = inbox.split('\n')
@@ -62,7 +64,8 @@ if (isMain(import.meta.url)) {
     const args = process.argv.slice(2)
     const retry = !args.includes('--no-retry')
     const [id, reason] = args.filter((arg) => arg !== '--no-retry')
-    const root = checkoutRoot()
+    // 状态只在主检出里改；在需求工作树里运行也改主检出那份。
+    const root = mainRoot()
     const { maxAutoRetries } = readConfig(root)
     const inboxFile = path.join(root, paths.inbox)
     const recordDir = path.join(root, paths.records)

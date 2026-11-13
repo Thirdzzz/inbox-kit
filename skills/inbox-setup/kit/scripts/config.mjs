@@ -1,7 +1,7 @@
 // 读取仓库根目录的 inbox.config.json，补齐默认值。所有收件箱脚本都从这里取路径和参数，不写死项目细节。
 // 本文件由 inbox-kit 生成；改配置请改 inbox.config.json，再运行 inbox-kit render。
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -9,7 +9,9 @@ export const defaults = {
   projectName: '',
   mainBranch: 'main',
   remote: 'origin',
-  worktreeDir: '.inbox/worktrees',
+  // 需求工作树放在仓库外：放在仓库里会被项目自己的测试、类型检查、文件监听扫到 N 份副本。
+  // 相对路径按主检出根目录解析；{repo} 换成仓库目录名。
+  worktreeDir: '../{repo}.inbox-worktrees',
   slots: 3,
   maxAutoRetries: 3,
   idleLimitMinutes: 15,
@@ -62,6 +64,8 @@ export const paths = {
   decisionLog: '.inbox/decisions.tsv',
 }
 export const statePatterns = [/^INBOX\.md$/, /^IDEAS\.md$/, /^inbox\//]
+// 流水线自身：需求分支不得改动，否则子代理能改掉自己的合并门禁（检查命令、越权检查脚本、调度技能）。
+export const pipelinePatterns = [/^\.inbox\//, /^inbox\.config\.json$/, /^\.agents\/skills\/inbox[^/]*\//]
 export const inboxMarker = '<!-- ===== 需求区（从这里往下写） ===== -->'
 export const statuses = ['待办', '进行中', '需要补充', '待检查', '已上线', '失败', '已否决']
 export const blockerTags = ['预算', '凭据', '不可逆数据', '验收无法判定']
@@ -87,7 +91,7 @@ export function normalize(raw) {
   }
   if (!['codex', 'pi', 'custom'].includes(config.dev.runtime)) errors.push(`dev.runtime 只能是 codex、pi、custom，实际是「${config.dev.runtime}」`)
   if (config.dev.runtime === 'custom' && !config.dev.command.includes('{prompt_file}')) errors.push('dev.runtime 为 custom 时，dev.command 必须包含 {prompt_file}')
-  if (!/^[\w./-]+$/.test(config.worktreeDir) || config.worktreeDir.startsWith('/')) errors.push('worktreeDir 必须是仓库内的相对路径')
+  if (!/^[\w./{}-]+$/.test(config.worktreeDir)) errors.push('worktreeDir 只能含字母、数字、. / - _ 和 {repo}')
   return { config, errors }
 }
 
@@ -103,6 +107,12 @@ export const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], {
 
 // 当前检出（主检出或需求工作树）的根目录，以运行目录为准。
 export const checkoutRoot = (cwd = process.cwd()) => git(cwd, 'rev-parse', '--show-toplevel')
+
+// 需求工作树的绝对路径。
+export function worktreeBase(root, config) {
+  return path.resolve(root, config.worktreeDir.replaceAll('{repo}', path.basename(root)))
+}
+export const worktreePath = (root, config, id) => path.join(worktreeBase(root, config), id)
 
 // 主检出根目录：所有工作树共享同一个 .git，需求工作树都挂在主检出下。
 export function mainRoot(cwd = process.cwd()) {
@@ -128,4 +138,12 @@ export function globToRegExp(glob) {
 
 export const matchesAny = (file, globs) => globs.some((glob) => globToRegExp(glob).test(file))
 
-export const isMain = (url) => Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(url)
+// 判断脚本是否被直接运行。两边都取真实路径：技能常通过软链接安装，argv[1] 是链接路径，import.meta.url 是真实路径。
+export function isMain(url) {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(url))
+  } catch {
+    return path.resolve(process.argv[1]) === fileURLToPath(url)
+  }
+}

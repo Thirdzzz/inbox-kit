@@ -45,7 +45,7 @@ test('安装：生成四个技能和脚本，生成结果与配置一致，钩�
     assert.match(readFileSync(path.join(repo.root, '.agents/skills/inbox/SKILL.md'), 'utf8'), /`test -f README\.md`/)
     assert.equal(git(repo.root, 'config', 'core.hooksPath'), '.inbox/hooks')
     assert.equal(repo.run('render.mjs', '--repo', repo.root, '--check').status, 0)
-    assert.match(readFileSync(path.join(repo.root, '.gitignore'), 'utf8'), /\.inbox\/worktrees\//)
+    assert.match(readFileSync(path.join(repo.root, '.gitignore'), 'utf8'), /\.inbox\/decisions\.tsv/)
     // 状态文件只创建不覆盖
     writeFileSync(path.join(repo.root, 'INBOX.md'), '负责人写的内容\n')
     assert.equal(repo.run('render.mjs', '--repo', repo.root).status, 0)
@@ -129,10 +129,10 @@ test('完整流程：认领、启动假子代理、等待结束、读结果、�
     const result = json(repo.run('launch.mjs', 'result', '001'))
     assert.equal(result.exitCode, 0)
     assert.equal(result.returned, 'ready')
-    assert.equal(result.resultsFile, '.inbox/worktrees/001/inbox/results/001.md')
+    assert.equal(result.resultsFile, path.join(repo.base, 'repo.inbox-worktrees/001/inbox/results/001.md'))
 
-    assert.equal(node(claimed.path, path.join(claimed.path, '.inbox/scripts/check.mjs')).status, 0)
-    const integrated = node(claimed.path, path.join(claimed.path, '.inbox/scripts/integrate.mjs'))
+    assert.equal(repo.run('check.mjs', '001').status, 0)
+    const integrated = repo.run('integrate.mjs', '001')
     assert.equal(integrated.status, 0, integrated.stderr)
     assert.match(integrated.stdout, /已集成到 main/)
     assert.ok(git(repo.remote, 'ls-tree', '-r', '--name-only', 'main').split('\n').includes('feature.txt'))
@@ -155,9 +155,9 @@ test('越权：需求分支改了调度者的记录，check.mjs 失败并指出�
     write(wt, 'INBOX.md', '子代理乱改\n')
     git(wt, 'add', '-A')
     git(wt, 'commit', '-qm', 'wip')
-    const result = node(wt, path.join(wt, '.inbox/scripts/check.mjs'))
+    const result = repo.run('check.mjs', '002')
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /改动了调度者拥有的文件/)
+    assert.match(result.stderr, /改动了它不该改的文件/)
     assert.match(result.stderr, /inbox\/results\/002\.md/)
   } finally {
     repo.cleanup()
@@ -173,7 +173,7 @@ test('集成：检查命令失败时不推送，并原样显示检查输出', ()
     git(wt, 'add', 'x.txt')
     git(wt, 'commit', '-qm', 'feat: x')
     const before = git(repo.remote, 'rev-parse', 'main')
-    const result = node(wt, path.join(wt, '.inbox/scripts/integrate.mjs'))
+    const result = repo.run('integrate.mjs', '003')
     assert.equal(result.status, 1)
     assert.match(result.stdout, /测试失败了/)
     assert.match(result.stderr, /检查命令退出码 3/)
@@ -197,7 +197,7 @@ test('集成：主分支在检查期间前进，会重新变基、重新检查�
     const marker = path.join(repo.base, 'ran')
     const script = path.join(repo.base, 'check.sh')
     writeFileSync(script, `if [ ! -f ${marker} ]; then touch ${marker}; cd ${other} && echo z > z.txt && git add z.txt && git -c user.name=t -c user.email=t@t commit -qm z && git push -q origin HEAD:main; fi\necho "检查 $(git rev-parse HEAD)"\n`)
-    const result = node(wt, path.join(wt, '.inbox/scripts/integrate.mjs'), '--check', `sh ${script}`)
+    const result = repo.run('integrate.mjs', '004', '--check', `sh ${script}`)
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /第 2 次尝试/)
     const files = git(repo.remote, 'ls-tree', '-r', '--name-only', 'main').split('\n')
@@ -256,6 +256,9 @@ test('状态同步：只提交想法簿和发现账本，不带走负责人的�
 test('体检：缺远端时失败并给出修法；探测能认出 npm 项目的检查命令', async () => {
   const repo = makeRepo({ render: false })
   try {
+    git(repo.root, 'remote', 'set-url', 'origin', '../remote.git')
+    const relative = node(repo.root, path.join(KIT, 'scripts/doctor.mjs'), '--repo', repo.root, '--skip-commands')
+    assert.match(relative.stdout, /✗ 远端：origin 是相对路径 \.\.\/remote\.git[^\n]*\n\s+→ git remote set-url origin \//)
     git(repo.root, 'remote', 'remove', 'origin')
     const doctor = node(repo.root, path.join(KIT, 'scripts/doctor.mjs'), '--repo', repo.root, '--skip-commands')
     assert.equal(doctor.status, 1)
@@ -267,6 +270,127 @@ test('体检：缺远端时失败并给出修法；探测能认出 npm 项目的
     assert.equal(found.suggested.commands.check, 'cd app && npm run lint && npm test')
     assert.equal(found.suggested.commands.fullCheck, 'cd app && npm run lint && npm test && npm run test:e2e')
     assert.equal(found.suggested.commands.install, 'cd app && npm ci')
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('门禁不能被分支改掉：分支把 fullCheck 改成 true，集成仍用主检出的检查并拒绝越权', () => {
+  const repo = makeRepo({ config: { ...baseConfig, commands: { check: 'true', fullCheck: 'echo 主检出的检查 && exit 7' } } })
+  try {
+    addRecord(repo.root, '006')
+    const { path: wt } = json(repo.run('worktree.mjs', 'claim', '006'))
+    write(wt, 'inbox.config.json', JSON.stringify({ ...baseConfig, commands: { check: 'true', fullCheck: 'true' } }))
+    write(wt, 'feature.txt', 'x\n')
+    git(wt, 'add', '-A')
+    git(wt, 'commit', '-qm', 'feat: 顺手改了配置')
+    const before = git(repo.remote, 'rev-parse', 'main')
+    const result = repo.run('integrate.mjs', '006')
+    assert.equal(result.status, 1)
+    assert.match(result.stdout, /集成检查命令：echo 主检出的检查 && exit 7（取自主检出的 inbox\.config\.json）/)
+    assert.match(result.stderr, /集成失败 \[ownership\][\s\S]*inbox\.config\.json/)
+    assert.equal(git(repo.remote, 'rev-parse', 'main'), before)
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('重试：--retry 把待办改回进行中并提交推送，再启动子代理', () => {
+  const repo = makeRepo({ config: fakeAgent('echo 重试运行') })
+  try {
+    addRecord(repo.root, '007', '进行中')
+    json(repo.run('worktree.mjs', 'claim', '007'))
+    assert.equal(repo.run('interrupt.mjs', '007', '超时').status, 0)
+    git(repo.root, 'add', 'INBOX.md', 'inbox')
+    git(repo.root, 'commit', '-qm', 'docs: 中断')
+    const started = json(repo.run('launch.mjs', 'start', '007', '--retry', '--note', '上次超时'))
+    assert.ok(started.pid > 0)
+    assert.match(readFileSync(path.join(repo.root, 'inbox/007-示例.md'), 'utf8'), /^status: 进行中$/m)
+    assert.match(git(repo.remote, 'log', '-1', '--format=%s', 'main'), /重新派发需求 007/)
+    const waited = json(repo.run('launch.mjs', 'wait', '--minutes', '1'))
+    assert.deepEqual(waited.needsAction.map((s) => s.state), ['exited'])
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('看门狗：进行中的记录没有工作树报 orphan；残缺工作树报 broken 而不是崩溃', () => {
+  const repo = makeRepo()
+  try {
+    addRecord(repo.root, '008', '进行中')
+    assert.deepEqual(JSON.parse(repo.run('watchdog.mjs').stdout).map((s) => [s.id, s.state]), [['008', 'orphan']])
+    const { path: wt } = json(repo.run('worktree.mjs', 'claim', '008'))
+    execFileSync('rm', ['-f', path.join(wt, '.git')])
+    const watched = repo.run('watchdog.mjs')
+    assert.equal(watched.status, 0, watched.stderr)
+    assert.equal(JSON.parse(watched.stdout)[0].state, 'broken')
+    // 残缺目录：认领给出明确修法，清理后可以重新认领。
+    const claim = repo.run('worktree.mjs', 'claim', '008')
+    assert.equal(claim.status, 1)
+    assert.match(claim.stderr, /cleanup 008 --keep-branch/)
+    assert.equal(repo.run('worktree.mjs', 'cleanup', '008', '--keep-branch').status, 0)
+    assert.equal(json(repo.run('worktree.mjs', 'claim', '008')).created, true)
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('认领：被其他会话占用时退出码 3；工作树在仓库外，不会被项目工具扫到', () => {
+  const repo = makeRepo()
+  try {
+    addRecord(repo.root, '009')
+    const { path: wt } = json(repo.run('worktree.mjs', 'claim', '009'))
+    assert.ok(!wt.startsWith(`${repo.root}/`), '默认工作树目录应在仓库外')
+    // 同一分支在别处检出：模拟另一个会话用另一个目录认领了它。
+    execFileSync('git', ['-C', repo.root, 'worktree', 'move', wt, path.join(repo.base, 'elsewhere')])
+    const second = repo.run('worktree.mjs', 'claim', '009')
+    assert.equal(second.status, 3, second.stderr)
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('钩子：.git/hooks 里已有钩子（如 git-lfs）时不设置 core.hooksPath', () => {
+  const repo = makeRepo({ render: false })
+  try {
+    write(repo.root, '.git/hooks/pre-push', '#!/bin/sh\ngit lfs pre-push "$@"\n')
+    const result = node(repo.root, path.join(KIT, 'scripts/render.mjs'), '--repo', repo.root)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /已有钩子（pre-push）/)
+    assert.throws(() => git(repo.root, 'config', '--get', 'core.hooksPath'))
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('升级：kit 里删掉的旧脚本会被清除，--check 能发现残留', () => {
+  const repo = makeRepo()
+  try {
+    write(repo.root, '.inbox/scripts/obsolete.mjs', '// 旧版本留下的脚本\n')
+    const check = repo.run('render.mjs', '--repo', repo.root, '--check')
+    assert.equal(check.status, 1)
+    assert.match(check.stderr, /obsolete\.mjs 是 kit 里没有的文件/)
+    assert.equal(node(repo.root, path.join(KIT, 'scripts/render.mjs'), '--repo', repo.root).status, 0)
+    assert.ok(!existsSync(path.join(repo.root, '.inbox/scripts/obsolete.mjs')))
+    assert.equal(repo.run('render.mjs', '--repo', repo.root, '--check').status, 0)
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('集成：受保护分支等服务端拒绝不重试，直接报出原因', () => {
+  const repo = makeRepo()
+  try {
+    write(repo.remote, 'hooks/pre-receive', '#!/bin/sh\necho "main 受保护" >&2\nexit 1\n')
+    execFileSync('chmod', ['+x', path.join(repo.remote, 'hooks/pre-receive')])
+    const { path: wt } = json(repo.run('worktree.mjs', 'claim', '010'))
+    write(wt, 'p.txt', 'p\n')
+    git(wt, 'add', 'p.txt')
+    git(wt, 'commit', '-qm', 'feat: p')
+    const result = repo.run('integrate.mjs', '010')
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /集成失败 \[push-failed\][\s\S]*main 受保护/)
+    assert.doesNotMatch(result.stdout, /第 2 次/)
   } finally {
     repo.cleanup()
   }

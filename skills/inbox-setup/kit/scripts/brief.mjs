@@ -3,7 +3,7 @@
 // 附加说明用于重试：写上一次中断的原因、分支已提交到哪一步、这次要怎么缩小范围；或负责人「打回」的理由。
 import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { argValue, blockerTags, isMain, mainRoot, paths, readConfig } from './config.mjs'
+import { argValue, blockerTags, isMain, mainRoot, paths, readConfig, worktreePath } from './config.mjs'
 
 export function buildBrief(config, { id, worktree, recordFile, note = '' }) {
   const tags = blockerTags.map((t) => `[${t}]`).join('、')
@@ -17,7 +17,7 @@ export function buildBrief(config, { id, worktree, recordFile, note = '' }) {
 
 ## 怎么做
 1. ${install}按验收标准先写测试，再实现。只改这条需求需要的内容，不顺手重构。
-2. 交付前跑检查：\`${config.commands.check}\`，再跑 \`node .inbox/scripts/check.mjs\`。失败就修，最多修 2 轮。不要跑合并前的完整检查（\`${config.commands.fullCheck}\`），那是调度者合并时的事。
+2. 交付前跑检查：\`${config.commands.check}\`，再跑 \`node .inbox/scripts/check.mjs\`（它会拒绝改动收件箱状态文件和流水线自身的分支）。失败就修，最多修 2 轮。不要跑合并前的完整检查（\`${config.commands.fullCheck}\`），那是调度者合并时的事。
 3. 给每条命令设上限：单条命令不要超过约 10 分钟；开发服务器、监听进程不要放在前台。一条命令卡住就算这一步失败。
 4. 每完成一步可用的进展就提交并推送：\`git add <明确路径> && git commit -m "wip: <中文说明>" && git push -u ${config.remote} inbox/${id}\`。你可能在 ${config.subagentTimeoutMinutes} 分钟时被停掉，或在 ${config.idleLimitMinutes} 分钟没有动静时被判为卡死；推送过的进度下次重试可以接着做。范围太大时，先做满足验收标准的最小版本。
 5. 正式提交信息用 \`feat:\` / \`fix:\` / \`test:\` / \`docs:\` 开头，后面写中文。全部通过后最后推送一次。
@@ -37,7 +37,8 @@ export function buildBrief(config, { id, worktree, recordFile, note = '' }) {
   ## 追问
   （只有返回 needs-info 时才写）
   \`\`\`
-- 不要改 \`${paths.inbox}\`、\`${paths.ideas}\` 和 \`${paths.records}/NNN-*.md\`：它们归调度者，\`check.mjs\` 会让越权的分支失败。
+- 不要改 \`${paths.inbox}\`、\`${paths.ideas}\`、\`${paths.records}/NNN-*.md\`（归调度者），也不要改 \`.inbox/\`、\`inbox.config.json\`、\`.agents/skills/inbox*\`（流水线自身）。越权的分支不会被合并。
+- 不要读取或修改与本需求无关的、工作树以外的文件。
 
 ## 返回值（写在结果文件第一行，也作为你最后一句话）
 - \`返回：ready\`：检查全部通过，已推送。
@@ -53,7 +54,7 @@ if (isMain(import.meta.url)) {
     const config = readConfig(root)
     const records = readdirSync(path.join(root, paths.records)).filter((name) => name.startsWith(`${id}-`) && name.endsWith('.md'))
     if (records.length !== 1) throw new Error(`inbox/ 中应恰好有一个 ${id}-*.md，实际 ${records.length} 个`)
-    const worktree = path.join(root, config.worktreeDir, id)
+    const worktree = worktreePath(root, config, id)
     if (!existsSync(worktree)) throw new Error(`没有工作树 ${worktree}`)
     process.stdout.write(buildBrief(config, { id, worktree, recordFile: `${paths.records}/${records[0]}`, note: argValue(process.argv.slice(2), '--note') ?? '' }))
   } catch (error) {

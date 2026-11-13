@@ -44,6 +44,8 @@ test('中断：额度内改回待办并计数，用尽后才标失败', async ()
   const noRetry = interruptText({ inbox, record: recordText({ id: '007', status: '进行中' }), id: '007', reason: '部署失败已回滚', date: 'd', retry: false })
   assert.match(noRetry.record, /不再自动重试/)
   assert.throws(() => interruptText({ inbox, record, id: '007', reason: ' ', date: 'd' }), /原因/)
+  const punct = interruptText({ inbox, record: recordText({ id: '007', status: '进行中' }), id: '007', reason: '推送失败。', date: 'd' })
+  assert.doesNotMatch(punct.record, /。。/)
 })
 
 test('状态检查：静默改回待办、过早失败、无标签追问、未知状态、超额计数都被拒绝', async () => {
@@ -81,6 +83,8 @@ test('依赖：缺失和循环被拒绝，未上线的依赖列为阻碍', async
 
 test('看门狗判定：启动窗口、进程消失、正常结束、卡死、超时', async () => {
   const { classify } = await load('watchdog.mjs')
+  // 退出码优先：进程号被复用、看起来「活着」，只要写下了退出码就是结束了。
+  assert.equal(classify({ agentId: 'pid:1@x', processAlive: true, exitCode: 0, idleMinutes: 99 }), 'exited')
   assert.equal(classify({ agentId: '', claimAgeMinutes: 2 }), 'launching')
   assert.equal(classify({ agentId: '', claimAgeMinutes: 6 }), 'launch-failed')
   assert.equal(classify({ agentId: 'pid:1', processAlive: false, exitCode: null }), 'died')
@@ -95,7 +99,9 @@ test('子代理命令：codex 在工作树里以完全访问运行，pi 用无�
   const files = { worktree: "/w/it's", promptFile: '/p', lastFile: '/l' }
   const codex = agentCommand({ runtime: 'codex', model: 'gpt-x' }, files)
   assert.match(codex, /^codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C '\/w\/it'\\''s' -o '\/l' -m 'gpt-x' "\$\(cat '\/p'\)" < \/dev\/null$/)
-  assert.match(agentCommand({ runtime: 'pi', model: '' }, files), /^pi -p --approve "\$\(cat '\/p'\)"/)
+  const pi = agentCommand({ runtime: 'pi', model: '' }, files)
+  assert.match(pi, /^pi --mode json -p --no-session "\$\(cat '\/p'\)" < \/dev\/null$/)
+  assert.doesNotMatch(pi, /--approve|\| *tee/, 'pi 不能信任工作树里的扩展，也不能用管道吞掉退出码')
   assert.equal(agentCommand({ runtime: 'custom', command: 'agent --in {prompt_file} --cwd {worktree}' }, files), "agent --in '/p' --cwd '/w/it'\\''s'")
 })
 
@@ -120,4 +126,43 @@ test('模板填充：条件段、反向段、嵌套、缺变量报错', async ()
   assert.equal(fill('a {{#x}}X{{/x}}{{^x}}Y{{/x}} {{v}}', { x: false, v: 1 }), 'a Y 1')
   assert.throws(() => fill('{{nope}}', {}), /未定义/)
   assert.throws(() => fill('{{#a}}x', { a: 1 }), /没有配对/)
+})
+
+test('通过软链接运行脚本也能执行（技能常以软链接安装）', async () => {
+  const { symlinkSync, mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { spawnSync } = await import('node:child_process')
+  const dir = mkdtempSync(path.join(tmpdir(), 'inbox-link-'))
+  try {
+    symlinkSync(path.resolve(KIT, '..'), path.join(dir, 'inbox-setup'))
+    const result = spawnSync(process.execPath, [path.join(dir, 'inbox-setup/kit/scripts/detect.mjs'), '--repo', path.resolve(KIT, '../../..')], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /"suggested"/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('进程身份：启动时间对不上就不算我们的进程（防进程号复用误杀）', async () => {
+  const { formatAgentId, isOurProcess, parseAgentId, startTimeOf } = await load('process.mjs')
+  const started = startTimeOf(process.pid)
+  assert.ok(started)
+  assert.equal(isOurProcess(formatAgentId(process.pid, started)), true)
+  assert.equal(isOurProcess(formatAgentId(process.pid, 'Mon Jan  1 00:00:00 2001')), false)
+  assert.equal(isOurProcess(`pid:${process.pid}`), false, '没有启动时间的旧格式无法核对身份')
+  assert.deepEqual(parseAgentId('pid:12@Sat Nov 14 00:54:33 2026'), { pid: 12, started: 'Sat Nov 14 00:54:33 2026' })
+})
+
+test('pi 的最终回复从 JSON 事件里取', async () => {
+  const { piLastMessage } = await load('launch.mjs')
+  const log = ['{"type":"agent_start"}', JSON.stringify({ type: 'agent_end', messages: [{ role: 'user', content: [] }, { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }, { type: 'text', text: '返回：ready' }] }] }), '{"type":"agent_settled"}'].join('\n')
+  assert.equal(piLastMessage(log), '返回：ready')
+})
+
+test('越权规则：需求分支不能改流水线自身', async () => {
+  const { findOwnershipViolations } = await load('check-ownership.mjs')
+  const changed = ['src/a.js', 'inbox/results/009.md', 'inbox.config.json', '.inbox/scripts/integrate.mjs', '.agents/skills/inbox/SKILL.md', '.agents/skills/other/SKILL.md']
+  assert.deepEqual(findOwnershipViolations({ branch: 'inbox/009', changedFiles: changed }), ['inbox.config.json', '.inbox/scripts/integrate.mjs', '.agents/skills/inbox/SKILL.md'])
+  // 编号早于 enforceFrom 时放过状态文件，但流水线自身仍然不行。
+  assert.deepEqual(findOwnershipViolations({ branch: 'inbox/009', changedFiles: ['INBOX.md', 'inbox.config.json'], enforceFrom: 10 }), ['inbox.config.json'])
 })

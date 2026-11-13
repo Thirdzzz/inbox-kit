@@ -2,7 +2,7 @@
 // 用法：node <kit>/scripts/doctor.mjs --repo <仓库路径> [--runtime codex|pi|custom] [--skip-commands]
 // 不带 --skip-commands 时会真的执行一次 commands.check 和 commands.fullCheck，确认它们能在当前仓库跑通。
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { argValue, isMain, normalize } from './config.mjs'
 
@@ -48,11 +48,14 @@ export function diagnose(repo, { runtime, skipCommands = false } = {}) {
   else add(current === mainBranch ? 'ok' : 'warn', '主分支', current === mainBranch ? mainBranch : `当前在 ${current || '游离 HEAD'}，主分支是 ${mainBranch}`, current === mainBranch ? '' : '安装和调度都在主检出的主分支上进行')
 
   const remoteUrl = git('remote', 'get-url', remote).stdout.trim()
-  if (!remoteUrl) add('fail', '远端', `没有远端 ${remote}`, `git remote add ${remote} <地址>；收件箱靠推送分支和主分支协作，没有远端无法合并`)
+  // 本地相对路径的远端（如 ../remote.git）在需求工作树里会按工作树目录解析，推送必然失败。
+  if (remoteUrl && /^\.{1,2}\//.test(remoteUrl)) {
+    add('fail', '远端', `${remote} 是相对路径 ${remoteUrl}，在需求工作树里会解析到别处`, `git remote set-url ${remote} ${path.resolve(repo, remoteUrl)}`)
+  } else if (!remoteUrl) add('fail', '远端', `没有远端 ${remote}`, `git remote add ${remote} <地址>；收件箱靠推送分支和主分支协作，没有远端无法合并`)
   else {
     const reach = git('ls-remote', '--heads', remote, mainBranch)
     if (reach.status !== 0) add('fail', '远端', `连不上 ${remote}（${remoteUrl}）：${reach.stderr.trim().split('\n').pop()}`, '检查网络、代理和凭据')
-    else if (!reach.stdout.trim()) add('warn', '远端', `${remote} 上还没有 ${mainBranch}`, `git push -u ${remote} ${mainBranch}`)
+    else if (!reach.stdout.trim()) add('fail', '远端', `${remote} 上还没有 ${mainBranch}`, `git push -u ${remote} ${mainBranch}；需求工作树从 ${remote}/${mainBranch} 建出，没有它无法认领需求`)
     else add('ok', '远端', `${remote} → ${remoteUrl}`)
   }
 
@@ -61,7 +64,13 @@ export function diagnose(repo, { runtime, skipCommands = false } = {}) {
   else add('ok', '工作区', '干净')
 
   const hooksPath = git('config', '--get', 'core.hooksPath').stdout.trim()
+  const hooksDir = git('rev-parse', '--path-format=absolute', '--git-path', 'hooks').stdout.trim()
+  const activeHooks = existsSync(hooksDir) ? readdirSync(hooksDir).filter((name) => !name.endsWith('.sample')) : []
   if (hooksPath && hooksPath !== '.inbox/hooks') add('warn', '提交钩子', `仓库已用 core.hooksPath=${hooksPath}`, '安装不会覆盖它；需要在其 pre-commit 里加一行 node .inbox/scripts/main-guard.mjs --staged')
+  else if (!hooksPath && activeHooks.length) add('warn', '提交钩子', `.git/hooks 里已有 ${activeHooks.join('、')}`, '安装不会设置 core.hooksPath（会让它们失效）；需要在 pre-commit 里加一行 node .inbox/scripts/main-guard.mjs --staged')
+
+  // 在 Codex 沙箱里运行时，网络和 .git 写入受限，调度者与子代理都无法工作。
+  if (process.env.CODEX_SANDBOX && process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1') add('fail', '运行环境', '当前在 Codex 沙箱里（不能联网，通常也不能写 .git）', '用完全访问模式运行 Codex（例如 codex --dangerously-bypass-approvals-and-sandbox，或在会话里切到 Full access）')
 
   const rt = runtime ?? config?.dev?.runtime ?? 'codex'
   if (rt === 'codex') {

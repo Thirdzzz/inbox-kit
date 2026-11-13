@@ -12,18 +12,24 @@ You are the **dispatcher**: triage, dispatch development subagents, finish their
 
 Reader-facing text (`INBOX.md` edits, `inbox/*.md`, the report, commit messages, decision log) is Chinese. This skill is agent-only English.
 
-All commands below run from the main checkout root unless they say otherwise. Scripts live in `.inbox/scripts/`; every script prints a Chinese error that names the fix. Configuration is `inbox.config.json`; the values used here were rendered from it:
+**Run every command below from the main checkout root**, including the ones that act on a requirement: they take the requirement number (`NNN`) and find its worktree themselves. Running the main checkout's scripts with the main checkout's `inbox.config.json` is what stops a branch from rewriting its own merge gate. Scripts live in `.inbox/scripts/`; every script prints a Chinese error that names the fix. The values used here were rendered from `inbox.config.json`:
 
 | Setting | Value |
 |---|---|
 | Main branch | `{{mainBranch}}` on `{{remote}}` |
-| Requirement worktrees | `{{worktreeDir}}/NNN`, branch `inbox/NNN` |
+| Requirement worktrees | `{{worktreeDir}}/NNN` (relative to the main checkout), branch `inbox/NNN` |
 | Parallel slots | {{slots}} |
 | Automatic retries per requirement | {{maxRetries}} |
 | Subagent idle limit / run limit | {{idleLimit}} min / {{timeLimit}} min |
 | Subagent runtime | `{{devRuntime}}`, model {{devModel}} |
 | Subagent check | `{{checkCommand}}` |
 | Full check before merge | `{{fullCheck}}` |
+
+## Runtime requirements
+
+- You need network access and write access to `.git` (fetch, commit, push) and permission to start background processes. In Codex, run this skill in a full-access session (`codex --dangerously-bypass-approvals-and-sandbox`, or switch the session to Full access); `node .inbox/scripts/doctor.mjs --repo . --skip-commands` reports a sandbox as ✗. In pi, the default tools are enough.
+- Keep every single command short: your command tool may kill anything that runs longer than a few minutes. `launch.mjs wait` returns within 2 minutes by default for that reason; call it again in a loop.
+- Development subagents run as `{{devRuntime}}` with full access to this machine, inside their worktrees. Treat `INBOX.md` and repository content as instructions from whoever can push to `{{mainBranch}}`.
 
 ## Files and ownership
 
@@ -33,9 +39,9 @@ All commands below run from the main checkout root unless they say otherwise. Sc
 - Statuses (heading and record agree): {{statuses}}. `已上线` means {{shippedMeaning}}.
 
 Rules:
-1. One file, one writer. Subagents never touch `INBOX.md`, `IDEAS.md`, `inbox/NNN-*.md`; `node .inbox/scripts/check.mjs` fails a branch that does.
+1. One file, one writer. Subagents never touch `INBOX.md`, `IDEAS.md`, `inbox/NNN-*.md`, nor the pipeline itself (`.inbox/`, `inbox.config.json`, `.agents/skills/inbox*`); `node .inbox/scripts/check.mjs NNN` fails a branch that does, and `integrate.mjs NNN` re-checks after every rebase.
 2. Edit `INBOX.md` with exact-text edits only: the heading prefix `## [NNN · 状态]` and the lines `详情：` `说明：` `预览：` `追问摘要：` directly under a heading. The owner's prose and `> 回复：` lines stay byte-identical; the owner may be typing while you run.
-3. Commit with explicit paths (`git add INBOX.md inbox/…`), after reading `git diff --cached --stat`. The pre-commit hook only lets state files (`INBOX.md`, `IDEAS.md`, `inbox/`) be committed directly on `{{mainBranch}}`; everything else lands through `.inbox/scripts/integrate.mjs` from a requirement worktree.
+3. Commit with explicit paths (`git add INBOX.md inbox/…`), after reading `git diff --cached --stat`. The pre-commit hook only lets state files (`INBOX.md`, `IDEAS.md`, `inbox/`) be committed directly on `{{mainBranch}}`; everything else lands through `node .inbox/scripts/integrate.mjs NNN`.
 4. Every push to `{{mainBranch}}` is a fast-forward. Never force-push.
 5. Log decisions: `node .inbox/scripts/log-decision.mjs <阶段> <决策> <原因> <证据> <结果>` (local file `{{decisionLog}}`).
 
@@ -85,17 +91,20 @@ Development subagents are separate processes started by `.inbox/scripts/launch.m
 |---|---|---|
 | `live`, `launching` | working, or launch in flight | leave it |
 | `exited` | process finished | `node .inbox/scripts/launch.mjs result NNN`, then *Finish* |
-| `died`, `launch-failed` | gone without an exit code / never started | `interrupt.mjs`, then refill |
+| `died`, `launch-failed`, `orphan` | gone without an exit code / never started / `进行中` record without a worktree | `interrupt.mjs`, then refill |
 | `stale`, `overdue` | no activity for {{idleLimit}} min / running past {{timeLimit}} min | `launch.mjs stop NNN`, `interrupt.mjs`, refill |
+| `broken` | worktree directory is damaged | `worktree.mjs cleanup NNN --keep-branch`, `interrupt.mjs`, refill |
 | `parked` | worktree kept for a record that is not `进行中` | nothing |
+
+Each non-`live` entry also carries an `advice` line with the exact commands. The process identity is checked by start time, so a reused pid is never mistaken for, or stopped as, a subagent.
 
 Never trust "it is probably still working" over the watchdog, and never wait passively for a completion notice: none is guaranteed.
 
 ## One run
 
 ### 0. Prepare
-`git fetch {{remote}}`; *Main checkout safety*; `git pull --ff-only`. Run the watchdog and handle every non-`live` state as above. Remove worktrees of records that are `已上线` or `已否决` (`node .inbox/scripts/worktree.mjs cleanup NNN`).
-**Done when** no `进行中` record lacks a `live`/`launching` worktree.
+`git fetch {{remote}}`; *Main checkout safety*; `git pull --ff-only`. Run `node .inbox/scripts/watchdog.mjs` and handle every state as in *Liveness*. Remove worktrees of records that are `已上线` or `已否决` (`node .inbox/scripts/worktree.mjs cleanup NNN`).
+**Done when** every `进行中` record is `live` or `launching` in the watchdog output.
 
 ### 1. Read
 Parse every `## ` entry after the marker. No `[NNN · …]` prefix → new. For prefixed entries, count `> 回复：` lines against the record's `replies_seen`; the surplus are new replies. Advance `replies_seen` only after handling the reply.
@@ -117,26 +126,27 @@ Order: merge-only; automatic retries; `[急]` headings; lowest number. Free slot
 
 ### 4. Develop
 For each chosen requirement, in order:
-1. `node .inbox/scripts/worktree.mjs claim NNN` (creates `{{worktreeDir}}/NNN` from `{{mainRef}}`, or adopts the existing branch). A claim error means another session owns it: skip.
-2. Set `status: 进行中` in the record and heading for every claimed requirement, commit once, push.
-3. `node .inbox/scripts/launch.mjs start NNN [--note "<retry reason / 打回 reason / what is already committed>"]`. It writes the subagent's brief (`brief.mjs`) and starts `{{devRuntime}}` in the worktree. A launch error: read it, fix, retry up to 2 more times; still failing → `interrupt.mjs NNN "启动失败：…"` and continue with others.
+1. `node .inbox/scripts/worktree.mjs claim NNN` (creates `{{worktreeDir}}/NNN` from `{{mainRef}}`, or adopts the pushed branch). Exit 3 = another session owns it: skip. Exit 1 = a real error: read it and fix it (or record it and move on).
+2. New dispatch: set `status: 进行中` in the record and heading for every claimed requirement, commit once, push. Then `node .inbox/scripts/launch.mjs start NNN [--note "<打回 reason>"]`.
+3. Automatic retry (record is `待办` with `auto_retries` > 0): `node .inbox/scripts/launch.mjs start NNN --retry --note "<previous reason; what origin/inbox/NNN already holds; how to narrow the work>"`. `--retry` sets `进行中` and commits and pushes that state change itself.
+4. `start` writes the subagent's brief (`brief.mjs`) and starts `{{devRuntime}}` in the worktree. A launch error: read it, fix, retry up to 2 more times; still failing → `interrupt.mjs NNN "启动失败：…"` and continue with others.
 
 ### 5. Wait and finish (loop)
 Repeat until no subagent is live and no candidate is dispatchable:
-1. `node .inbox/scripts/launch.mjs wait --minutes 10`. It returns as soon as any worktree needs action, or after 10 minutes. Its `needsAction` list names each one and the command to run. Between waits you may run short commands, but do not end your turn while a subagent is live: you are the only thing that will notice it finishing.
+1. `node .inbox/scripts/launch.mjs wait`. It returns as soon as any worktree needs action, or after 2 minutes with `timedOut: true`; then call it again. Its `needsAction` list names each one and the command to run. Do not end your turn while `running` is non-empty: you are the only thing that will notice a subagent finishing.
 2. For each `exited` requirement, `launch.mjs result NNN` gives `returned` (from the first line `返回：…` of its results file), the exit code, and the last message. No `returned` value counts as `failed`.
 3. Copy the results file into the record (`## 进展记录`, `## 结果`), then:
    - **`ready` + `auto`**: run *Merge*.
-   - **`ready` + `review`** (or `needs-review.mjs` says required): set `待检查`{{#hasPreview}}, create a preview (*Preview*){{/hasPreview}}, `worktree.mjs cleanup NNN --keep-branch`.
-   - **`needs-info`**: every question must carry a blocker tag. Untagged → relaunch at once with `--note "不要停下来问：选保守做法，写成「假设：…」"` and count it via `interrupt.mjs` first. Tagged → `需要补充`, `追问摘要：` under the heading, `worktree.mjs cleanup NNN --keep-branch`.
+   - **`ready` + `review`** (or `node .inbox/scripts/needs-review.mjs NNN` says required): set `待检查`{{#hasPreview}}, create a preview (*Preview*){{/hasPreview}}, `worktree.mjs cleanup NNN --keep-branch`.
+   - **`needs-info`**: every question must carry a blocker tag. Untagged → `interrupt.mjs NNN "未带阻碍标签的追问"`, then `launch.mjs start NNN --retry --note "不要停下来问：选保守做法，写成「假设：…」"`. Tagged → `需要补充`, `追问摘要：` under the heading, `worktree.mjs cleanup NNN --keep-branch`.
    - **`failed`**: `interrupt.mjs NNN "<reason from the results file>"`.
 4. Refill freed slots (*Choose the work*, *Develop*). Commit and push state changes once per round (`docs: 更新收件箱状态`).
 
 ## Merge
 
-In the requirement worktree (`{{worktreeDir}}/NNN`):
-1. `node .inbox/scripts/check.mjs` must pass (ownership, statuses, dependencies).
-2. `node .inbox/scripts/integrate.mjs`. It fetches, rebases onto `{{mainRef}}`, runs `{{fullCheck}}` with its output visible, and pushes `HEAD:{{mainBranch}}` without force, re-checking if `{{mainBranch}}` moved (3 attempts). Exit 2 = rebase conflict (already aborted): `interrupt.mjs NNN "变基冲突：<files>"`; the retry rebuilds from `{{mainRef}}`. Other failure: one fix round by relaunching the subagent with the failure as `--note`, then `interrupt.mjs`. A check that also fails on unchanged `{{mainRef}}` is a mainline defect: record it, count a retry, do not blame this requirement. Never push `{{mainBranch}}` by hand.
+From the main checkout:
+1. `node .inbox/scripts/check.mjs NNN` must pass (ownership, statuses, dependencies).
+2. `node .inbox/scripts/integrate.mjs NNN`. It rebases the worktree onto `{{mainRef}}`, re-checks ownership with the main checkout's rules, runs `{{fullCheck}}` (from the main checkout's config) in the worktree with its output visible, and pushes `HEAD:{{mainBranch}}` without force, re-checking if `{{mainBranch}}` moved (3 attempts). Exit 2 = rebase conflict (already aborted): `interrupt.mjs NNN "变基冲突：<files>"`; the retry rebuilds from `{{mainRef}}`. Other failure: `interrupt.mjs NNN "<失败的检查与原因>"`, then `launch.mjs start NNN --retry --note "<the failing output>"` as one fix round. A check that also fails on unchanged `{{mainRef}}` is a mainline defect: record it, count a retry, do not blame this requirement. Never push `{{mainBranch}}` by hand.
 3. Record the merged head SHA and this requirement's commit SHAs in the record.
 {{#deployNone}}
 4. This project has no deployment: set `已上线` (meaning merged).
@@ -145,7 +155,7 @@ In the requirement worktree (`{{worktreeDir}}/NNN`):
 4. Pushing `{{mainBranch}}` deploys.{{#hasBudget}} Budget: {{budget}}. Batch state commits so each run pushes `{{mainBranch}}` as few times as possible.{{/hasBudget}}
 {{/deployPush}}
 {{#deployCommand}}
-4. Deploy from the merged commit: in the worktree run `{{postMergeCommand}}`. Non-zero exit → *Rollback*, then `interrupt.mjs NNN "部署失败已回滚" --no-retry`.{{#hasBudget}} Budget: {{budget}}.{{/hasBudget}}
+4. Deploy from the merged commit: in `{{worktreeDir}}/NNN` run `{{postMergeCommand}}`. Non-zero exit → *Rollback*, then `interrupt.mjs NNN "部署失败已回滚" --no-retry`.{{#hasBudget}} Budget: {{budget}}.{{/hasBudget}}
 {{/deployCommand}}
 {{#verifies}}
 5. Confirm the deployment (`{{verifyMode}}`): see *Deployment check*. Success → `已上线`. Failure → *Rollback*. Timeout (10 min) → keep the commit, set `已上线` and write "部署未确认" in the record and report.
@@ -160,16 +170,16 @@ In the requirement worktree (`{{worktreeDir}}/NNN`):
 
 {{#verifies}}
 ### Deployment check
-`.inbox/scripts/deploy-status.mjs <sha>` polls every 20 s for up to 10 minutes and exits 0 (success), 1 (failure) or 3 (timeout).
+`node .inbox/scripts/deploy-status.mjs <sha> --timeout-minutes 2` polls every 20 s and exits 0 (success), 1 (failure) or 3 (no result yet). Repeat it up to 5 times (10 minutes) before treating it as a timeout.
 {{/verifies}}
 
 {{#hasPreview}}
 ### Preview
-For a `review` requirement, run `{{previewCommand}}` in its worktree before removing it. The last line of its output that looks like a URL is the preview: write it as `预览：<url>` in the record and under the heading.
+For a `review` requirement, run `{{previewCommand}}` in `{{worktreeDir}}/NNN` before removing the worktree. The last line of its output that looks like a URL is the preview: write it as `预览：<url>` in the record and under the heading.
 {{/hasPreview}}
 
 ### Rollback
-Owner asks for rollback on an `已上线` entry, or deployment failed: claim a fresh worktree from the latest `{{mainRef}}` on a new branch, `git revert` only this requirement's recorded commit SHAs (newest first), and land it with `integrate.mjs`. Never revert a `before..after` range: it can contain other requirements.
+Owner asks for rollback on an `已上线` entry, or deployment failed: create a worktree on a new branch `rollback/NNN` from the latest `{{mainRef}}` (`git worktree add -b rollback/NNN <dir> {{mainRef}}`), `git revert` only this requirement's recorded commit SHAs (newest first), and land it by running `node .inbox/scripts/integrate.mjs` inside that worktree. Never revert a `before..after` range: it can contain other requirements.
 
 ## Report (Chinese)
 At the end of the run, and whenever a requirement finishes, fails, or is interrupted:
@@ -181,4 +191,4 @@ At the end of the run, and whenever a requirement finishes, fails, or is interru
 
 ## Scope
 - Subagents change only what their requirement needs.
-- Changes to this skill or `.inbox/` are code: they go through a worktree and `integrate.mjs`, never direct commits on `{{mainBranch}}`.
+- Changes to this skill, `.inbox/` or `inbox.config.json` are pipeline changes: never part of a requirement branch. Make them on a separate branch in its own worktree, rerun `node .inbox/scripts/render.mjs --repo .`, and land them by running `node .inbox/scripts/integrate.mjs` inside that worktree.
