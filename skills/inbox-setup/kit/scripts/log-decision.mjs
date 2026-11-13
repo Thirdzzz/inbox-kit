@@ -10,7 +10,7 @@ export const header = '时间\t阶段\t决策\t原因\t证据\t结果\n'
 const cell = (value) => (/^[=+\-@"]/.test(value) ? `'${value}` : value)
 
 export function buildRow(fields, timestamp = new Date().toISOString()) {
-  if (fields.length !== 5) throw new Error('用法：node .inbox/scripts/log-decision.mjs <阶段> <决策> <原因> <证据> <结果>')
+  if (fields.length !== 5) throw new Error(`需要恰好 5 个参数，收到 ${fields.length} 个。每个字段用引号包成一个参数：node .inbox/scripts/log-decision.mjs "<阶段>" "<决策>" "<原因>" "<证据>" "<结果>"`)
   const labels = ['阶段', '决策', '原因', '证据', '结果']
   fields.forEach((value, index) => {
     if (!value?.trim()) throw new Error(`「${labels[index]}」不能为空`)

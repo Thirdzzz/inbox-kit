@@ -395,3 +395,53 @@ test('集成：受保护分支等服务端拒绝不重试，直接报出原因',
     repo.cleanup()
   }
 })
+
+test('状态同步 --all：集成推进主分支后，主检出的状态提交变基推送，不再卡在分叉（pi 验收中真实发生过）', () => {
+  const repo = makeRepo()
+  try {
+    addRecord(repo.root, '011', '进行中')
+    const { path: wt } = json(repo.run('worktree.mjs', 'claim', '011'))
+    write(wt, 'f.txt', 'f\n')
+    git(wt, 'add', 'f.txt')
+    git(wt, 'commit', '-qm', 'feat: f')
+    assert.equal(repo.run('integrate.mjs', '011').status, 0)
+    // 调度者在主检出改状态并提交：此时本地主分支已落后远端。
+    const record = path.join(repo.root, 'inbox/011-示例.md')
+    write(repo.root, 'inbox/011-示例.md', readFileSync(record, 'utf8').replace('status: 进行中', 'status: 已上线'))
+    write(repo.root, 'README.md', '# 负责人正在改\n')
+    git(repo.root, 'commit', '-qm', 'docs: 先提交了一次状态', '--', 'inbox/011-示例.md')
+    const synced = repo.run('state-sync.mjs', '--all', '-m', 'docs: 需求 011 已上线')
+    assert.equal(synced.status, 0, synced.stdout)
+    assert.equal(git(repo.root, 'rev-parse', 'HEAD'), git(repo.remote, 'rev-parse', 'main'))
+    assert.match(git(repo.remote, 'log', '--format=%s', '-3', 'main'), /先提交了一次状态\nfeat: f/)
+    assert.match(git(repo.root, 'status', '--porcelain'), /README\.md/)
+    // 本地主分支混进了非状态文件：拒绝推送。
+    write(repo.root, 'code.js', 'x\n')
+    git(repo.root, 'add', 'code.js')
+    execFileSync('git', ['-C', repo.root, 'commit', '-qm', 'oops', '--no-verify'])
+    const refused = repo.run('state-sync.mjs', '--all')
+    assert.equal(refused.status, 1)
+    assert.match(refused.stdout, /含有状态文件之外的改动（code\.js）/)
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('强制审阅判定：工作树已清理（停在待检查）时改看远端分支', () => {
+  const repo = makeRepo({ config: { ...baseConfig, review: { paths: ['src/storage/**'], rules: [] } } })
+  try {
+    addRecord(repo.root, '012')
+    const { path: wt } = json(repo.run('worktree.mjs', 'claim', '012'))
+    write(wt, 'src/storage/format.js', 'export const V = 2\n')
+    git(wt, 'add', '-A')
+    git(wt, 'commit', '-qm', 'feat: 升级格式')
+    git(wt, 'push', '-q', 'origin', 'HEAD:inbox/012')
+    assert.deepEqual(json(repo.run('needs-review.mjs', '012')).files, ['src/storage/format.js'])
+    assert.equal(repo.run('worktree.mjs', 'cleanup', '012', '--keep-branch').status, 0)
+    const after = repo.run('needs-review.mjs', '012')
+    assert.equal(after.status, 0, after.stderr)
+    assert.equal(JSON.parse(after.stdout).required, true)
+  } finally {
+    repo.cleanup()
+  }
+})

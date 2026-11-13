@@ -15,7 +15,7 @@ You install the **inbox pipeline** into the current repository and walk the owne
 
 Talk to the owner in Chinese. Every question comes with a recommended answer so "好" accepts it. Look up facts yourself; ask only for choices.
 
-`KIT` below is the `kit/` directory next to this file: resolve it to an absolute path first (`realpath`), since skills are often installed as symlinks. Every script prints Chinese errors that name the fix; a script that prints nothing at all has not run, so treat silence as a failure.
+`KIT` below is the subdirectory `kit/` inside the directory that contains this `SKILL.md` (so `KIT/scripts/doctor.mjs` sits at `<this skill's directory>/kit/scripts/doctor.mjs`). Resolve it to an absolute path first (`realpath`), since skills are often installed as symlinks. Every script prints Chinese errors that name the fix; a script that prints nothing at all has not run, so treat silence as a failure.
 
 **Runtime.** You need network access and write access to `.git`. In Codex this means a full-access session; doctor reports a sandbox as ✗.
 

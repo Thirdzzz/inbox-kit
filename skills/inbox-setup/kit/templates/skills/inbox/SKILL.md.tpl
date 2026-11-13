@@ -41,9 +41,9 @@ Reader-facing text (`INBOX.md` edits, `inbox/*.md`, the report, commit messages,
 Rules:
 1. One file, one writer. Subagents never touch `INBOX.md`, `IDEAS.md`, `inbox/NNN-*.md`, nor the pipeline itself (`.inbox/`, `inbox.config.json`, `.agents/skills/inbox*`); `node .inbox/scripts/check.mjs NNN` fails a branch that does, and `integrate.mjs NNN` re-checks after every rebase.
 2. Edit `INBOX.md` with exact-text edits only: the heading prefix `## [NNN · 状态]` and the lines `详情：` `说明：` `预览：` `追问摘要：` directly under a heading. The owner's prose and `> 回复：` lines stay byte-identical; the owner may be typing while you run.
-3. Commit with explicit paths (`git add INBOX.md inbox/…`), after reading `git diff --cached --stat`. The pre-commit hook only lets state files (`INBOX.md`, `IDEAS.md`, `inbox/`) be committed directly on `{{mainBranch}}`; everything else lands through `node .inbox/scripts/integrate.mjs NNN`.
+3. Commit and push state changes only with `node .inbox/scripts/state-sync.mjs --all -m "<中文提交信息>"`. It commits only `INBOX.md`, `IDEAS.md` and `inbox/`, rebases onto `{{mainRef}}` (which `integrate.mjs` keeps moving), and pushes; the main checkout is current afterwards. Exit 1: quote its message in the report and carry on; the commit stays local and the next sync retries. Do not use `git pull`/`git push` on `{{mainBranch}}` yourself. Everything except state files lands through `node .inbox/scripts/integrate.mjs NNN`.
 4. Every push to `{{mainBranch}}` is a fast-forward. Never force-push.
-5. Log decisions: `node .inbox/scripts/log-decision.mjs <阶段> <决策> <原因> <证据> <结果>` (local file `{{decisionLog}}`).
+5. Log decisions: `node .inbox/scripts/log-decision.mjs "<阶段>" "<决策>" "<原因>" "<证据>" "<结果>"`, exactly five quoted arguments (local file `{{decisionLog}}`).
 
 ## Never wait for the owner
 
@@ -58,7 +58,7 @@ Everything else is retried without a reply: a subagent that times out, hangs, di
 {{#hasReviewPaths}}
 ## Forced review
 
-A requirement becomes `autonomy: review` (fill `forced_review_reason`, add `[review]` to the heading, tell the owner why) when the heading has `[review]`, or when its change touches any of: {{reviewPaths}}. Check at triage from the files you expect to change, and again after development with `node .inbox/scripts/needs-review.mjs` run inside the worktree.
+A requirement becomes `autonomy: review` (fill `forced_review_reason`, add `[review]` to the heading, tell the owner why) when the heading has `[review]`, or when its change touches any of: {{reviewPaths}}. Check at triage from the files you expect to change, and again after development with `node .inbox/scripts/needs-review.mjs NNN`.
 {{#hasReviewRules}}
 
 Also forced when the change does any of:
@@ -79,8 +79,8 @@ A requirement is `autonomy: review` when its heading has `[review]`{{#hasReviewR
 
 The main checkout may hold the owner's uncommitted work.
 1. Untracked files never matter.
-2. Before any pull: intersect `git diff --name-only` with `git diff --name-only HEAD {{mainRef}}` (after `git fetch`). Empty → pull. Overlap outside `INBOX.md` → stop and name the paths to the owner. Only `INBOX.md` → try `git pull --ff-only`; if git refuses, report and end the run.
-3. Commit only this run's paths. If `git diff --cached` holds anything else, skip the commit and report.
+2. `state-sync.mjs` refuses to rebase when `{{remote}}` changed a file the owner is editing, and refuses to push local commits that contain anything but state files. Both are reported, never forced.
+3. Uncommitted `INBOX.md` edits are new requirements: triage them, and they are committed with your state changes.
 4. Never stash, reset, clean, or checkout over the owner's changes.
 
 ## Liveness
@@ -103,7 +103,7 @@ Never trust "it is probably still working" over the watchdog, and never wait pas
 ## One run
 
 ### 0. Prepare
-`git fetch {{remote}}`; *Main checkout safety*; `git pull --ff-only`. Run `node .inbox/scripts/watchdog.mjs` and handle every state as in *Liveness*. Remove worktrees of records that are `已上线` or `已否决` (`node .inbox/scripts/worktree.mjs cleanup NNN`).
+`node .inbox/scripts/state-sync.mjs --all -m "docs: 同步收件箱"` (brings the main checkout up to date). Run `node .inbox/scripts/watchdog.mjs` and handle every state as in *Liveness*. Remove worktrees of records that are `已上线` or `已否决` (`node .inbox/scripts/worktree.mjs cleanup NNN`).
 **Done when** every `进行中` record is `live` or `launching` in the watchdog output.
 
 ### 1. Read
@@ -117,17 +117,19 @@ Parse every `## ` entry after the marker. No `[NNN · …]` prefix → new. For 
 - Overlap with an unfinished requirement on the same files → add it to `depends_on`. Then `node .inbox/scripts/dependencies.mjs` must pass.
 - Heading becomes `## [NNN · 待办] 标题` with a `详情：[inbox/NNN-….md](inbox/NNN-….md)` line under it.
 - **Condense** entries that carry the intake sections, after confirming the record holds them verbatim: replace the body with one `说明：` line (effect in one sentence, dependency, review reason). Short owner-typed entries, `> 回复：` lines and `需要补充` entries stay as typed.
-- Commit once (`docs: 分诊需求 NNN…`) and push.
+- `node .inbox/scripts/state-sync.mjs --all -m "docs: 分诊需求 NNN…"`.
 
 ### 3. Choose the work
 Candidates: `待办` (including automatic retries); `需要补充` with a new reply → `待办`; `待检查` + reply 通过 → merge-only; `待检查` + reply 打回… → `待办` with the reason as `--note`; `失败` + new reply → `待办`.
 Hold a candidate while any `depends_on` entry is not `已上线` (`dependencies.mjs` lists blockers); a dependency that is `待办` is itself a candidate and goes first.
 Order: merge-only; automatic retries; `[急]` headings; lowest number. Free slots = {{slots}} − (live subagents + merge-only in progress).
 
+**Merge-only** (a `待检查` requirement the owner approved): `worktree.mjs claim NNN` (adopts `{{remote}}/inbox/NNN`, the exact code the owner reviewed), set `进行中`, then *Merge* without launching a subagent. The approval covers that code only. If *Merge* fails (rebase conflict, failing check), `interrupt.mjs` it as usual; the rebuilt branch is new code, so when its subagent returns `ready` it goes back to `待检查` for a fresh review and is not merged under the old 通过.
+
 ### 4. Develop
 For each chosen requirement, in order:
 1. `node .inbox/scripts/worktree.mjs claim NNN` (creates `{{worktreeDir}}/NNN` from `{{mainRef}}`, or adopts the pushed branch). Exit 3 = another session owns it: skip. Exit 1 = a real error: read it and fix it (or record it and move on).
-2. New dispatch: set `status: 进行中` in the record and heading for every claimed requirement, commit once, push. Then `node .inbox/scripts/launch.mjs start NNN [--note "<打回 reason>"]`.
+2. New dispatch: set `status: 进行中` in the record and heading for every claimed requirement, then `state-sync.mjs --all -m "docs: 开始处理需求 NNN…"`. Then `node .inbox/scripts/launch.mjs start NNN [--note "<打回 reason>"]`.
 3. Automatic retry (record is `待办` with `auto_retries` > 0): `node .inbox/scripts/launch.mjs start NNN --retry --note "<previous reason; what origin/inbox/NNN already holds; how to narrow the work>"`. `--retry` sets `进行中` and commits and pushes that state change itself.
 4. `start` writes the subagent's brief (`brief.mjs`) and starts `{{devRuntime}}` in the worktree. A launch error: read it, fix, retry up to 2 more times; still failing → `interrupt.mjs NNN "启动失败：…"` and continue with others.
 
@@ -136,18 +138,18 @@ Repeat until no subagent is live and no candidate is dispatchable:
 1. `node .inbox/scripts/launch.mjs wait`. It returns as soon as any worktree needs action, or after 2 minutes with `timedOut: true`; then call it again. Its `needsAction` list names each one and the command to run. Do not end your turn while `running` is non-empty: you are the only thing that will notice a subagent finishing.
 2. For each `exited` requirement, `launch.mjs result NNN` gives `returned` (from the first line `返回：…` of its results file), the exit code, and the last message. No `returned` value counts as `failed`.
 3. Copy the results file into the record (`## 进展记录`, `## 结果`), then:
-   - **`ready` + `auto`**: run *Merge*.
-   - **`ready` + `review`** (or `node .inbox/scripts/needs-review.mjs NNN` says required): set `待检查`{{#hasPreview}}, create a preview (*Preview*){{/hasPreview}}, `worktree.mjs cleanup NNN --keep-branch`.
+   - **`ready` + `auto`**, and `node .inbox/scripts/needs-review.mjs NNN` says not required: run *Merge*.
+   - **`ready` + `review`**, or needs-review says required (also after a retry of an approved requirement): do not merge; set `待检查`{{#hasPreview}}, create a preview (*Preview*){{/hasPreview}}, `worktree.mjs cleanup NNN --keep-branch`.
    - **`needs-info`**: every question must carry a blocker tag. Untagged → `interrupt.mjs NNN "未带阻碍标签的追问"`, then `launch.mjs start NNN --retry --note "不要停下来问：选保守做法，写成「假设：…」"`. Tagged → `需要补充`, `追问摘要：` under the heading, `worktree.mjs cleanup NNN --keep-branch`.
    - **`failed`**: `interrupt.mjs NNN "<reason from the results file>"`.
-4. Refill freed slots (*Choose the work*, *Develop*). Commit and push state changes once per round (`docs: 更新收件箱状态`).
+4. Refill freed slots (*Choose the work*, *Develop*). Sync state once per round (`state-sync.mjs --all -m "docs: 更新收件箱状态"`).
 
 ## Merge
 
 From the main checkout:
 1. `node .inbox/scripts/check.mjs NNN` must pass (ownership, statuses, dependencies).
 2. `node .inbox/scripts/integrate.mjs NNN`. It rebases the worktree onto `{{mainRef}}`, re-checks ownership with the main checkout's rules, runs `{{fullCheck}}` (from the main checkout's config) in the worktree with its output visible, and pushes `HEAD:{{mainBranch}}` without force, re-checking if `{{mainBranch}}` moved (3 attempts). Exit 2 = rebase conflict (already aborted): `interrupt.mjs NNN "变基冲突：<files>"`; the retry rebuilds from `{{mainRef}}`. Other failure: `interrupt.mjs NNN "<失败的检查与原因>"`, then `launch.mjs start NNN --retry --note "<the failing output>"` as one fix round. A check that also fails on unchanged `{{mainRef}}` is a mainline defect: record it, count a retry, do not blame this requirement. Never push `{{mainBranch}}` by hand.
-3. Record the merged head SHA and this requirement's commit SHAs in the record.
+3. Record the merged head SHA and this requirement's commit SHAs in the record. From here on the code is on `{{mainBranch}}`: the status can only become `已上线` (or go through *Rollback*), never `待检查` or `待办`.
 {{#deployNone}}
 4. This project has no deployment: set `已上线` (meaning merged).
 {{/deployNone}}
@@ -164,9 +166,12 @@ From the main checkout:
 {{^deployNone}}
 5. No automatic deployment check is configured: set `已上线` and list "部署结果未自动确认" under 没有验证的.
 {{/deployNone}}
+{{#deployNone}}
+5. Nothing to deploy or confirm.
+{{/deployNone}}
 {{/verifies}}
 6. `node .inbox/scripts/log-decision.mjs 需求NNN <决策> <原因> inbox/NNN-<title>.md <结果>`.
-7. From the main checkout: `node .inbox/scripts/worktree.mjs cleanup NNN` (worktree, local and remote branch), then `git pull --ff-only`.
+7. `node .inbox/scripts/worktree.mjs cleanup NNN` (worktree, local and remote branch), then `state-sync.mjs --all -m "docs: 需求 NNN 已上线"`.
 
 {{#verifies}}
 ### Deployment check

@@ -108,7 +108,7 @@ test('子代理命令：codex 在工作树里以完全访问运行，pi 用无�
 test('决策日志：五个字段、不能换行、公式开头加单引号', async () => {
   const { buildRow } = await load('log-decision.mjs')
   assert.equal(buildRow(['阶段', '=决策', '原因', '证据', '结果'], 'T'), "T\t阶段\t'=决策\t原因\t证据\t结果\n")
-  assert.throws(() => buildRow(['a', 'b', 'c', 'd']), /用法/)
+  assert.throws(() => buildRow(['a', 'b', 'c', 'd']), /需要恰好 5 个参数，收到 4 个/)
   assert.throws(() => buildRow(['a', 'b\nc', 'c', 'd', 'e']), /换行/)
 })
 

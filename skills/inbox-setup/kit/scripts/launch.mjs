@@ -10,12 +10,13 @@
 //   node .inbox/scripts/launch.mjs wait [--minutes 2]   等到任一子代理需要处理或时间到，输出看门狗 JSON
 //   node .inbox/scripts/launch.mjs stop <NNN>           停掉子代理的整个进程组（核对身份后才停）
 //   node .inbox/scripts/launch.mjs result <NNN>         输出退出码、结果文件里的「返回：」、最终回复
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { existsSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { argValue, git, isMain, mainRoot, paths, readConfig, worktreePath } from './config.mjs'
 import { advice, inspectAll } from './watchdog.mjs'
 import { buildBrief } from './brief.mjs'
+import { stateSync } from './state-sync.mjs'
 import { formatAgentId, groupAlive, isOurProcess, killGroup, parseAgentId, startTimeOf } from './process.mjs'
 
 export const runFile = (worktree, name) => git(worktree, 'rev-parse', '--path-format=absolute', '--git-path', name)
@@ -57,7 +58,7 @@ const recordOf = (root, id) => {
   return records[0]
 }
 
-// 重试：把记录和 INBOX.md 标题从「待办」改回「进行中」，提交并推送（这两个是状态文件，可以直接提交到主分支）。
+// 重试：把记录和 INBOX.md 标题从「待办」改回「进行中」，经 state-sync 提交并推送（同步失败只提示，提交留在本地）。
 export function markRetry(root, config, id) {
   const recordRel = `${paths.records}/${recordOf(root, id)}`
   const recordFile = path.join(root, recordRel)
@@ -68,12 +69,8 @@ export function markRetry(root, config, id) {
   const inbox = readFileSync(inboxFile, 'utf8')
   if (!inbox.includes(`## [${id} · 待办]`)) throw new Error(`INBOX.md 里找不到「${id} · 待办」标题`)
   writeFileSync(inboxFile, inbox.replace(`## [${id} · 待办]`, `## [${id} · 进行中]`))
-  const run = (...args) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' })
-  run('add', '--', paths.inbox, recordRel)
-  const committed = run('commit', '-m', `docs: 重新派发需求 ${id}`, '--', paths.inbox, recordRel)
-  if (committed.status !== 0) throw new Error(`提交失败：${committed.stderr}`)
-  const pushed = run('push', config.remote, `HEAD:${config.mainBranch}`)
-  return pushed.status === 0 ? '' : `状态已提交，但推送失败（稍后随其他状态一起推送）：${pushed.stderr.trim()}`
+  const synced = stateSync({ root, remote: config.remote, mainBranch: config.mainBranch, files: [paths.inbox, recordRel], message: `docs: 重新派发需求 ${id}` })
+  return synced.ok ? '' : synced.report.join(' ')
 }
 
 export function start(root, config, id, { promptFile, note = '', retry = false } = {}) {

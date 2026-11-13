@@ -38,7 +38,7 @@ Raw ideas from `inbox-idea`. Newest entry wins on the same point. Cite as `想�
 ## Steps
 
 ### 0. Sync state
-`node .inbox/scripts/state-sync.mjs`. It commits and pushes only `IDEAS.md` and `{{ledger}}`, never fails the run. Quote its output at the top of your reply.
+`node .inbox/scripts/state-sync.mjs`. It commits and pushes only `IDEAS.md` and `{{ledger}}`. Exit 1 does not stop discovery: the commit stays local and the next run retries. Quote its output at the top of your reply.
 
 ### 1. Ground
 `node .inbox/scripts/signals.mjs` (read-only; every line has a pointer). Read `{{ledger}}` first (偏好, 反偏好, 已否决, 暂缓 with 重提条件), then `IDEAS.md`{{#hasGlossary}}, `{{glossary}}`{{/hasGlossary}}{{#hasDocs}}, {{docs}}{{/hasDocs}}.
