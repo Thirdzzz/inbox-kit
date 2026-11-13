@@ -409,8 +409,9 @@ test('状态同步 --all：集成推进主分支后，主检出的状态提交�
     // 调度者在主检出改状态并提交：此时本地主分支已落后远端。
     const record = path.join(repo.root, 'inbox/011-示例.md')
     write(repo.root, 'inbox/011-示例.md', readFileSync(record, 'utf8').replace('status: 进行中', 'status: 已上线'))
+    write(repo.root, 'INBOX.md', readFileSync(path.join(repo.root, 'INBOX.md'), 'utf8').replace('[011 · 进行中]', '[011 · 已上线]'))
     write(repo.root, 'README.md', '# 负责人正在改\n')
-    git(repo.root, 'commit', '-qm', 'docs: 先提交了一次状态', '--', 'inbox/011-示例.md')
+    git(repo.root, 'commit', '-qm', 'docs: 先提交了一次状态', '--', 'inbox/011-示例.md', 'INBOX.md')
     const synced = repo.run('state-sync.mjs', '--all', '-m', 'docs: 需求 011 已上线')
     assert.equal(synced.status, 0, synced.stdout)
     assert.equal(git(repo.root, 'rev-parse', 'HEAD'), git(repo.remote, 'rev-parse', 'main'))
@@ -423,6 +424,12 @@ test('状态同步 --all：集成推进主分支后，主检出的状态提交�
     const refused = repo.run('state-sync.mjs', '--all')
     assert.equal(refused.status, 1)
     assert.match(refused.stdout, /含有状态文件之外的改动（code\.js）/)
+    // 标题漏写编号：同步照常，但以「检查：」报出并以退出码 1 提醒。
+    git(repo.root, 'reset', '-q', '--hard', 'origin/main')
+    write(repo.root, 'INBOX.md', readFileSync(path.join(repo.root, 'INBOX.md'), 'utf8').replace('## [011 · 已上线] 示例', '## 示例'))
+    const flagged = repo.run('state-sync.mjs', '--all')
+    assert.equal(flagged.status, 1)
+    assert.match(flagged.stdout, /已推送到 main[\s\S]*检查：INBOX\.md：找不到「## \[011 · 已上线\]」标题/)
   } finally {
     repo.cleanup()
   }

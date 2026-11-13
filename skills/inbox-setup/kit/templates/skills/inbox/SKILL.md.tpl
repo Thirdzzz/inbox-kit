@@ -41,7 +41,7 @@ Reader-facing text (`INBOX.md` edits, `inbox/*.md`, the report, commit messages,
 Rules:
 1. One file, one writer. Subagents never touch `INBOX.md`, `IDEAS.md`, `inbox/NNN-*.md`, nor the pipeline itself (`.inbox/`, `inbox.config.json`, `.agents/skills/inbox*`); `node .inbox/scripts/check.mjs NNN` fails a branch that does, and `integrate.mjs NNN` re-checks after every rebase.
 2. Edit `INBOX.md` with exact-text edits only: the heading prefix `## [NNN · 状态]` and the lines `详情：` `说明：` `预览：` `追问摘要：` directly under a heading. The owner's prose and `> 回复：` lines stay byte-identical; the owner may be typing while you run. Whenever you change a status, rewrite those lines you own so none of them contradicts the new status (an `已上线` entry must not still say it awaits review).
-3. Commit and push state changes only with `node .inbox/scripts/state-sync.mjs --all -m "<中文提交信息>"`. It commits only `INBOX.md`, `IDEAS.md` and `inbox/`, rebases onto `{{mainRef}}` (which `integrate.mjs` keeps moving), and pushes; the main checkout is current afterwards. Exit 1: quote its message in the report and carry on; the commit stays local and the next sync retries. Do not use `git pull`/`git push` on `{{mainBranch}}` yourself. Everything except state files lands through `node .inbox/scripts/integrate.mjs NNN`.
+3. Commit and push state changes only with `node .inbox/scripts/state-sync.mjs --all -m "<中文提交信息>"`. It commits only `INBOX.md`, `IDEAS.md` and `inbox/`, rebases onto `{{mainRef}}` (which `integrate.mjs` keeps moving), and pushes; the main checkout is current afterwards. Exit 1: read every line. `检查：` lines are state mistakes you made (a record without its `## [NNN · 状态]` heading, mismatched status): fix them now and sync again. `状态同步：` failures: quote them in the report and carry on; the commit stays local and the next sync retries. Do not use `git pull`/`git push` on `{{mainBranch}}` yourself. Everything except state files lands through `node .inbox/scripts/integrate.mjs NNN`.
 4. Every push to `{{mainBranch}}` is a fast-forward. Never force-push.
 5. Log decisions: `node .inbox/scripts/log-decision.mjs "<阶段>" "<决策>" "<原因>" "<证据>" "<结果>"`, exactly five quoted arguments (local file `{{decisionLog}}`).
 
@@ -185,7 +185,7 @@ For a `review` requirement, run `{{previewCommand}}` in `{{worktreeDir}}/NNN` be
 {{/hasPreview}}
 
 ### Rollback
-Owner asks for rollback on an `已上线` entry, or deployment failed: create a worktree on a new branch `rollback/NNN` from the latest `{{mainRef}}` (`git worktree add -b rollback/NNN {{worktreeDir}}/rollback-NNN {{mainRef}}`), `git revert` only this requirement's recorded commit SHAs (newest first), and land it by running `node .inbox/scripts/integrate.mjs` inside that worktree. `gc.mjs` removes both once the revert is on `{{mainBranch}}`. Never revert a `before..after` range: it can contain other requirements.
+Owner asks for rollback on an `已上线` entry, or deployment failed: create a worktree on a new branch `rollback/NNN` from the latest `{{mainRef}}` (`git worktree add -b rollback/NNN {{worktreeDir}}/rollback-NNN {{mainRef}}`), `git revert` only this requirement's recorded commit SHAs (newest first), and land it by running `node .inbox/scripts/integrate.mjs` inside that worktree (the one exception to running from the main checkout: a rollback has no requirement number). `gc.mjs` removes both once the revert is on `{{mainBranch}}`. Never revert a `before..after` range: it can contain other requirements.
 
 ## Cleanup
 

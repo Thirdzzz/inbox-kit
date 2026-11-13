@@ -166,3 +166,14 @@ test('越权规则：需求分支不能改流水线自身', async () => {
   // 编号早于 enforceFrom 时放过状态文件，但流水线自身仍然不行。
   assert.deepEqual(findOwnershipViolations({ branch: 'inbox/009', changedFiles: ['INBOX.md', 'inbox.config.json'], enforceFrom: 10 }), ['inbox.config.json'])
 })
+
+test('状态检查：记录在 INBOX.md 里没有编号标题、或标题状态不一致都报错（Codex 验收中 005 漏了前缀）', async () => {
+  const { findHeadingProblems } = await load('check-status.mjs')
+  const marker = '<!-- ===== 需求区（从这里往下写） ===== -->'
+  const inbox = `# 收件箱\n${marker}\n\n## 清单标题行\n描述\n\n## [006 · 待检查] 创建时间\n`
+  const problems = findHeadingProblems(inbox, [{ file: '005-清单标题行.md', status: '已上线' }, { file: '006-创建时间.md', status: '已上线' }])
+  assert.equal(problems.length, 2)
+  assert.match(problems[0], /找不到「## \[005 · 已上线\]」标题/)
+  assert.match(problems[1], /006 的标题写「待检查」，记录 006-创建时间\.md 是「已上线」/)
+  assert.deepEqual(findHeadingProblems(`${marker}\n## [005 · 已上线] 清单标题行\n`, [{ file: '005-x.md', status: '已上线' }]), [])
+})

@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { argValue, isMain, normalize, paths, statePatterns } from './config.mjs'
 import { collectGarbage } from './gc.mjs'
+import { findHeadingProblems, findStatusProblems, readAllRecords } from './check-status.mjs'
 
 export const ideaFiles = [paths.ideas, paths.ledger]
 export const allStateFiles = [paths.inbox, paths.ideas, `${paths.records}/`]
@@ -106,10 +107,20 @@ if (isMain(import.meta.url)) {
   const { config } = normalize(existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {})
   const all = args.includes('--all')
   const result = stateSync({ root, remote: config.remote, mainBranch: config.mainBranch, files: all ? allStateFiles : ideaFiles, message: argValue(args, '-m') })
-  if (all && result.ok) {
-    const { removed, kept } = collectGarbage(root, config)
-    for (const r of removed) result.report.push(`回收：${r.id}（${r.status ?? ''}）删除了${r.removed.join('、')}。`)
-    for (const k of kept) result.report.push(`回收：保留 ${k.id}：${k.reason}。`)
+  const synced = result.ok
+  if (all) {
+    // 回收只在推送成功后做：删除依据（记录状态）要和远端一致。
+    if (synced) {
+      const { removed, kept } = collectGarbage(root, config)
+      for (const r of removed) result.report.push(`回收：${r.id}（${r.status ?? ''}）删除了${r.removed.join('、')}。`)
+      for (const k of kept) result.report.push(`回收：保留 ${k.id}：${k.reason}。`)
+    }
+    // 状态写法有问题时立刻指出来，免得下次运行重复分诊或漏掉需求。
+    const records = readAllRecords(root)
+    const inbox = path.join(root, paths.inbox)
+    const problems = [...findStatusProblems(records, config), ...(existsSync(inbox) ? findHeadingProblems(readFileSync(inbox, 'utf8'), records) : [])]
+    for (const line of problems) result.report.push(`检查：${line}`)
+    if (problems.length) result.ok = false
   }
   console.log(result.report.join('\n'))
   process.exitCode = result.ok ? 0 : 1
