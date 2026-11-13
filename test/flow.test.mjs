@@ -445,3 +445,27 @@ test('强制审阅判定：工作树已清理（停在待检查）时改看远�
     repo.cleanup()
   }
 })
+
+test('部署：command 模式部署后用确认命令判定成功、失败、没有结论', () => {
+  const config = { ...baseConfig, deploy: { mode: 'command', postMergeCommand: 'echo deployed > deployed.txt', verify: 'command', verifyCommand: 'sh verify.sh {sha}' } }
+  const repo = makeRepo({ config })
+  try {
+    const verify = (code) => write(repo.root, 'verify.sh', `echo 检查 $1\nexit ${code}\n`)
+    verify(0)
+    const ok = repo.run('deploy-status.mjs', 'abc123', '--timeout-minutes', '0')
+    assert.equal(ok.status, 0, ok.stdout)
+    assert.match(ok.stdout, /部署成功：abc123（检查 abc123）/)
+    verify(1)
+    assert.equal(repo.run('deploy-status.mjs', 'abc123').status, 1)
+    verify(5)
+    const pending = repo.run('deploy-status.mjs', 'abc123', '--timeout-minutes', '0')
+    assert.equal(pending.status, 3)
+    assert.match(pending.stdout, /没有结论/)
+    // 生成的调度技能写出了部署命令与确认步骤。
+    const skill = readFileSync(path.join(repo.root, '.agents/skills/inbox/SKILL.md'), 'utf8')
+    assert.match(skill, /echo deployed > deployed\.txt/)
+    assert.match(skill, /deploy-status\.mjs <sha>/)
+  } finally {
+    repo.cleanup()
+  }
+})
