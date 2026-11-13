@@ -90,4 +90,4 @@ Then: 技术债 (separate lane), 考虑过但不推荐 (title + failed gate), an
 - Deferred → 暂缓: date, proposal, why, and a checkable 重提条件 (propose one if the owner gave none).
 - A correction or explanation from the owner → 偏好 / 反偏好 with a pointer to their words.
 - One line under 发现记录: date, candidates, which were taken / rejected / rewritten, evidence tiers.
-Log rejections and deferrals with `node .inbox/scripts/log-decision.mjs`. The ledger is a state file: commit it on `{{mainBranch}}` with an explicit path, or leave it for the next `state-sync.mjs`.
+Log rejections and deferrals with `node .inbox/scripts/log-decision.mjs`. After writing the ledger, run `node .inbox/scripts/state-sync.mjs` again so this run's ledger entries reach `{{remote}}`.

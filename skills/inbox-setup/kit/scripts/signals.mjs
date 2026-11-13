@@ -150,5 +150,5 @@ const recordFiles = () => {
 }
 
 out.push('\n## 脚本之外必须自己读')
-out.push([`- ${paths.ideas}（想法簿）`, `- ${[config.product.glossary, ...config.product.docs].filter(Boolean).join('、') || '（配置里没有列出产品文档）'}`, '- 真实应用：按发现技能的走查步骤实际用一遍主要场景'].join('\n'))
+out.push([`- ${paths.ideas}（想法簿${fs.existsSync(path.join(root, paths.ideas)) ? '' : '，尚不存在：负责人还没用 inbox-idea 记过想法'}）`, `- ${[config.product.glossary, ...config.product.docs].filter(Boolean).join('、') || '（配置里没有列出产品文档）'}`, '- 真实应用：按发现技能的走查步骤实际用一遍主要场景'].join('\n'))
 process.stdout.write(`# 信号收集（${new Date().toISOString().slice(0, 10)}，${config.projectName || path.basename(root)}）\n${out.join('\n')}\n`)

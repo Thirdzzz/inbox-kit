@@ -40,7 +40,7 @@ Reader-facing text (`INBOX.md` edits, `inbox/*.md`, the report, commit messages,
 
 Rules:
 1. One file, one writer. Subagents never touch `INBOX.md`, `IDEAS.md`, `inbox/NNN-*.md`, nor the pipeline itself (`.inbox/`, `inbox.config.json`, `.agents/skills/inbox*`); `node .inbox/scripts/check.mjs NNN` fails a branch that does, and `integrate.mjs NNN` re-checks after every rebase.
-2. Edit `INBOX.md` with exact-text edits only: the heading prefix `## [NNN · 状态]` and the lines `详情：` `说明：` `预览：` `追问摘要：` directly under a heading. The owner's prose and `> 回复：` lines stay byte-identical; the owner may be typing while you run.
+2. Edit `INBOX.md` with exact-text edits only: the heading prefix `## [NNN · 状态]` and the lines `详情：` `说明：` `预览：` `追问摘要：` directly under a heading. The owner's prose and `> 回复：` lines stay byte-identical; the owner may be typing while you run. Whenever you change a status, rewrite those lines you own so none of them contradicts the new status (an `已上线` entry must not still say it awaits review).
 3. Commit and push state changes only with `node .inbox/scripts/state-sync.mjs --all -m "<中文提交信息>"`. It commits only `INBOX.md`, `IDEAS.md` and `inbox/`, rebases onto `{{mainRef}}` (which `integrate.mjs` keeps moving), and pushes; the main checkout is current afterwards. Exit 1: quote its message in the report and carry on; the commit stays local and the next sync retries. Do not use `git pull`/`git push` on `{{mainBranch}}` yourself. Everything except state files lands through `node .inbox/scripts/integrate.mjs NNN`.
 4. Every push to `{{mainBranch}}` is a fast-forward. Never force-push.
 5. Log decisions: `node .inbox/scripts/log-decision.mjs "<阶段>" "<决策>" "<原因>" "<证据>" "<结果>"`, exactly five quoted arguments (local file `{{decisionLog}}`).
