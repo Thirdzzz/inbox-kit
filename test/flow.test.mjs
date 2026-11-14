@@ -595,3 +595,31 @@ test('状态同步 --all 推送成功后自动回收：已上线需求的工作�
     repo.cleanup()
   }
 })
+
+test('状态同步：两个会话同时同步，各自的改动都推上去，不互相夹带', async () => {
+  const repo = makeRepo()
+  try {
+    // 会话 A 的状态改动已在主检出里；会话 B 稍后写入另一个文件。两次同步同时开始。
+    write(repo.root, 'IDEAS.md', '# 想法簿\n- A 的想法\n')
+    const { spawn } = await import('node:child_process')
+    const start = (message) => new Promise((resolve) => {
+      const child = spawn(process.execPath, [path.join(repo.root, '.inbox/scripts/state-sync.mjs'), '--all', '-m', message], { cwd: repo.root })
+      let out = ''
+      child.stdout.on('data', (d) => (out += d))
+      child.stderr.on('data', (d) => (out += d))
+      child.on('close', (code) => resolve({ code, out }))
+    })
+    const a = start('docs: A')
+    write(repo.root, 'inbox/发现账本.md', '# 发现账本\n- B 的记录\n')
+    const b = start('docs: B')
+    const results = await Promise.all([a, b])
+    for (const { out } of results) assert.doesNotMatch(out, /index\.lock|提交失败/, out)
+    git(repo.root, 'fetch', '-q', 'origin')
+    const files = git(repo.root, '-c', 'core.quotePath=false', 'ls-tree', '-r', '--name-only', 'origin/main')
+    assert.match(files, /IDEAS\.md/)
+    assert.match(files, /inbox\/发现账本\.md/)
+    assert.equal(git(repo.root, 'status', '--porcelain', '--', 'IDEAS.md', 'inbox'), '')
+  } finally {
+    repo.cleanup()
+  }
+})

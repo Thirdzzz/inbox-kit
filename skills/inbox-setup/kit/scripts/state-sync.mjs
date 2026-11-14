@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { argValue, isMain, normalize, paths, statePatterns } from './config.mjs'
 import { collectGarbage } from './gc.mjs'
+import { withStateLock } from './state-lock.mjs'
 import { findHeadingProblems, findStatusProblems, readAllRecords } from './check-status.mjs'
 
 export const ideaFiles = [paths.ideas, paths.ledger]
@@ -45,7 +46,17 @@ function dirtyFiles(root) {
   return files
 }
 
-export function stateSync({ root, remote = 'origin', mainBranch = 'main', files = ideaFiles, message }) {
+// 整段同步（提交、变基、推送）在收件箱状态锁内进行：同时同步的会话排队，不抢暂存区，也不在对方变基中途插入。
+export function stateSync(options) {
+  try {
+    return withStateLock(options.root, () => syncUnlocked(options), { label: 'state-sync' })
+  } catch (error) {
+    const reason = /等收件箱状态锁超时/.test(error.message) ? '没拿到收件箱状态锁' : '出错'
+    return { ok: false, report: [`状态同步：${reason}，本次跳过，提交留在本地：${error.message}`] }
+  }
+}
+
+function syncUnlocked({ root, remote = 'origin', mainBranch = 'main', files = ideaFiles, message }) {
   const report = []
   const say = (line) => report.push(line)
   const fail = (line) => ({ ok: false, report: [...report, line] })

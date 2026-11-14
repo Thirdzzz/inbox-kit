@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import path from 'node:path'
-import { KIT, recordText } from './helpers.mjs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { KIT, makeRepo, recordText } from './helpers.mjs'
 
 const load = (name) => import(path.join(KIT, 'scripts', name))
 
@@ -176,4 +177,24 @@ test('状态检查：记录在 INBOX.md 里没有编号标题、或标题状态�
   assert.match(problems[0], /找不到「## \[005 · 已上线\]」标题/)
   assert.match(problems[1], /006 的标题写「待检查」，记录 006-创建时间\.md 是「已上线」/)
   assert.deepEqual(findHeadingProblems(`${marker}\n## [005 · 已上线] 清单标题行\n`, [{ file: '005-x.md', status: '已上线' }]), [])
+})
+
+test('状态锁：持有者已死的遗留锁被清掉；活着的持有者让后来者等待；结束时不删别人的锁', async () => {
+  const { withStateLock, lockPath } = await import(path.join(KIT, 'scripts/state-lock.mjs'))
+  const repo = makeRepo({ render: false })
+  try {
+    const lock = lockPath(repo.root)
+    mkdirSync(lock)
+    writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 999999, started: Date.now() }))
+    assert.equal(withStateLock(repo.root, () => 'ok'), 'ok')
+    assert.equal(existsSync(lock), false)
+    mkdirSync(lock)
+    writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, started: Date.now(), token: 'other' }))
+    assert.throws(() => withStateLock(repo.root, () => 'ok', { waitMs: 300 }), /等收件箱状态锁超时/)
+    rmSync(lock, { recursive: true })
+    withStateLock(repo.root, () => writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, token: 'taken-over' })))
+    assert.equal(existsSync(lock), true)
+  } finally {
+    repo.cleanup()
+  }
 })
