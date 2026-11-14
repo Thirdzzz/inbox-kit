@@ -8,10 +8,10 @@
 
 ```sh
 # 软链接到用户级技能目录（pi 和 Codex 都会扫描 ~/.agents/skills）
-ln -s /Users/third/repos/experiments/inbox-kit/skills/inbox-setup ~/.agents/skills/inbox-setup
+ln -s /path/to/inbox-kit/skills/inbox-setup ~/.agents/skills/inbox-setup
 
 # 或作为 pi 包安装
-pi install /Users/third/repos/experiments/inbox-kit
+pi install /path/to/inbox-kit
 ```
 
 ## 在一个仓库里启用
@@ -67,6 +67,10 @@ pi install /Users/third/repos/experiments/inbox-kit
 - 配置里的命令（检查、部署、确认、自定义运行时）会原样交给 shell 执行。
 - 主分支守卫是本机提交钩子，`INBOX_ALLOW_MAIN_COMMIT=1` 或新克隆都能绕过。真正的保护要在远端开启分支保护。
 - 合并门禁（检查命令、越权规则）一律取自主检出，需求分支改不了；需求分支改动 `.inbox/`、`inbox.config.json` 或 inbox 技能会被拒绝合并。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
 
 ## 开发本仓库
 

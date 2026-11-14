@@ -2,6 +2,7 @@
   "name": "inbox-kit",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "收件箱需求流水线：一个 inbox-setup 技能，在新仓库里问答配置并生成 inbox 系列技能。支持 pi 与 Codex。",
   "keywords": ["pi-package"],
